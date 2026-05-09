@@ -16,12 +16,13 @@
         </svg>
         <span>EnglishAI Chat</span>
       </div>
+      <div id="headerProfile" class="header-profile"></div>
     </header>
 
     <nav class="tab-nav">
       <a href="#/chat"    class="tab-link" data-view="chat">💬 <span class="tab-text">Chat</span></a>
       <a href="#/stats"   class="tab-link" data-view="stats">📊 <span class="tab-text">Stats</span></a>
-      <a href="#/history" class="tab-link" data-view="history">📝 <span class="tab-text">History</span></a>
+      <a href="#/review"  class="tab-link" data-view="review">📚 <span class="tab-text">Review</span></a>
       <a href="#/profile" class="tab-link" data-view="profile">👤 <span class="tab-text">Profile</span></a>
     </nav>
 
@@ -30,9 +31,16 @@
       <div class="goal-bar">
         <div class="goal-info">
           <span id="goalLabel" class="goal-label-text">Today: 0 / 10 turns</span>
-          <button id="clearBtn" class="btn-clear">초기화</button>
+          <div class="goal-actions">
+            <button id="roleplayBtn" class="btn-roleplay">🎭 롤플레이</button>
+            <button id="clearBtn" class="btn-clear">초기화</button>
+          </div>
         </div>
         <div class="goal-track"><div class="goal-fill" id="goalFill"></div></div>
+      </div>
+      <div class="roleplay-banner hidden" id="roleplayBanner">
+        <span id="roleplayBannerTitle">🎭 롤플레이 중</span>
+        <button class="roleplay-banner-end" id="roleplayEndBtn">종료</button>
       </div>
       <div class="body">
         <main id="chatContainer" class="chat" role="log" aria-live="polite" aria-label="Conversation"></main>
@@ -48,14 +56,14 @@
       </div>
     </section>
 
-    <!-- ── Stats View ─────────────────────────────────────────────── -->
+    <!-- ── Stats + History View ──────────────────────────────────── -->
     <section class="view" id="view-stats">
       <div class="page-scroll" id="statsContent"></div>
     </section>
 
-    <!-- ── History View ───────────────────────────────────────────── -->
-    <section class="view" id="view-history">
-      <div class="page-scroll" id="historyContent"></div>
+    <!-- ── Review View ───────────────────────────────────────────── -->
+    <section class="view" id="view-review">
+      <div class="page-scroll" id="reviewContent"></div>
     </section>
 
     <!-- ── Profile View ───────────────────────────────────────────── -->
@@ -63,6 +71,9 @@
       <div class="page-scroll">
         <div class="page-wrap">
           <h2 class="page-title">👤 Profile</h2>
+
+          <!-- Profile slot selector rendered by JS -->
+          <div id="profileSlotSelector"></div>
 
           <!-- Saved profile cards rendered by JS -->
           <div id="savedProfileSection"></div>
@@ -72,12 +83,20 @@
           </div>
 
           <div class="form-section">
+            <div class="form-label">Learning Language</div>
+            <div class="radio-group lang-radio-group">
+              <label class="radio-opt lang-opt"><input type="radio" name="lang" value="en" checked> 🇺🇸 English</label>
+              <label class="radio-opt lang-opt"><input type="radio" name="lang" value="ja"> 🇯🇵 日本語</label>
+            </div>
+          </div>
+
+          <div class="form-section">
             <label class="form-label" for="profileName">Nickname</label>
             <input type="text" id="profileName" class="form-input" placeholder="Your name" maxlength="30">
           </div>
 
           <div class="form-section">
-            <div class="form-label">English Level</div>
+            <div class="form-label">Level</div>
             <div class="radio-group">
               <label class="radio-opt"><input type="radio" name="level" value="beginner"> Beginner</label>
               <label class="radio-opt"><input type="radio" name="level" value="intermediate" checked> Intermediate</label>
@@ -136,8 +155,10 @@
         <div class="tts-btns">
           <button id="pauseBtn"   class="btn-tts" title="Pause/Resume" disabled>⏸</button>
           <button id="stopTTSBtn" class="btn-tts" title="Stop"         disabled>⏹</button>
+          <button id="langBtn" class="btn-autoplay btn-lang">🇺🇸 English</button>
           <button id="autoPlayBtn" class="btn-autoplay active" aria-pressed="true">🔊 Auto ON</button>
           <button id="translationBtn" class="btn-autoplay active" aria-pressed="true">🇰🇷 번역 ON</button>
+          <button id="hideTextBtn" class="btn-autoplay" aria-pressed="false">👁 가리기 OFF</button>
         </div>
       </div>
       <div class="input-row">
@@ -162,6 +183,25 @@
       </div>
     </footer>
 
+  </div>
+
+  <!-- ── Roleplay Modal ───────────────────────────────────────────────── -->
+  <div class="modal-overlay hidden" id="roleplayModal">
+    <div class="modal-panel">
+      <div class="modal-header">
+        <span class="modal-title">🎭 롤플레이 시나리오</span>
+        <button class="modal-close" id="roleplayModalClose">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="scenario-grid" id="scenarioGrid"></div>
+        <div class="custom-scenario-section">
+          <div class="custom-scenario-label">✏️ 직접 상황 만들기</div>
+          <textarea id="customScenarioInput" class="custom-scenario-input"
+            placeholder="상황을 자세히 설명해주세요.&#10;예) 카페 바리스타인 AI와 영어로 커피 주문을 연습하고 싶어요."></textarea>
+          <button class="btn-primary" id="customScenarioBtn">이 상황으로 시작</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>

@@ -6,32 +6,151 @@ const PRIMARY_MODEL  = 'meta-llama/llama-3.3-70b-instruct:free';
 const FALLBACK_MODEL = 'openai/gpt-oss-20b:free';
 const MAX_TURNS      = 10;
 
-const OPENROUTER_API_KEY = (typeof CONFIG !== 'undefined' && CONFIG.OPENROUTER_API_KEY)
-  || localStorage.getItem('or_api_key') || '';
-
 const SUPABASE_URL      = (typeof CONFIG !== 'undefined' && CONFIG.SUPABASE_URL)      || '';
 const SUPABASE_ANON_KEY = (typeof CONFIG !== 'undefined' && CONFIG.SUPABASE_ANON_KEY) || '';
+
+function getApiKey() {
+  return (typeof CONFIG !== 'undefined' && CONFIG.OPENROUTER_API_KEY)
+    || localStorage.getItem('or_api_key') || '';
+}
 
 function apiHeaders() {
   return {
     'Content-Type': 'application/json',
-    'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+    'Authorization': `Bearer ${getApiKey()}`,
     'HTTP-Referer': window.location.origin,
     'X-Title': 'EnglishAI Chat',
   };
 }
 
-const SYSTEM_PROMPT =
-  'You are a friendly English conversation partner. Respond naturally in English. ' +
-  'Keep responses concise (2-4 sentences). Encourage the user to continue speaking.';
+const LANG_CONFIG = {
+  en: {
+    flag: '🇺🇸', name: 'English',
+    sttLang: 'en-US', ttsLang: 'en-US',
+    inputPlaceholder: 'Type in English or tap 🎤 to speak…',
+    feedbackPlaceholder: 'Send a message to get feedback on your English.',
+    welcome: (name) => `Hi${name}! I'm your English conversation partner.<br>Let's start practicing — type a message or tap 🎤 to speak!`,
+    systemPrompt: 'You are a friendly English conversation partner. Respond naturally in English. Keep responses concise (2-4 sentences). Encourage the user to continue speaking.',
+    feedbackPrompt:
+      'You are an English language teacher. Analyze the user\'s sentence for:\n' +
+      '1. Grammar errors\n2. Unnatural expressions\n3. Vocabulary improvements\n\n' +
+      'Respond ONLY in this exact JSON (no markdown, no extra text):\n' +
+      '{"hasIssues":true,"corrections":[{"original":"...","corrected":"...","explanation":"...","type":"grammar"}],"overallFeedback":"..."}\n' +
+      'type must be: grammar, expression, or vocabulary.\n' +
+      'Write "explanation" and "overallFeedback" fields in Korean.\n' +
+      'If correct: {"hasIssues":false,"corrections":[],"overallFeedback":"훌륭해요! 자연스러운 영어입니다."}',
+  },
+  ja: {
+    flag: '🇯🇵', name: '日本語',
+    sttLang: 'ja-JP', ttsLang: 'ja-JP',
+    inputPlaceholder: '日本語で入力するか、🎤をタップして話してください…',
+    feedbackPlaceholder: '메시지를 보내면 일본어 피드백을 받아볼 수 있습니다.',
+    welcome: (name) => `こんにちは${name}！日本語の練習をしましょう。<br>メッセージを入力するか、🎤をタップして話してください！`,
+    systemPrompt: 'You are a friendly Japanese conversation partner. Respond naturally in Japanese using appropriate hiragana, katakana, and kanji. Keep responses concise (2-4 sentences). Encourage the user to continue speaking.',
+    feedbackPrompt:
+      'You are a Japanese language teacher. Analyze the user\'s Japanese sentence for:\n' +
+      '1. Grammar errors (particles, verb forms, etc.)\n2. Unnatural expressions\n3. Vocabulary improvements\n\n' +
+      'Respond ONLY in this exact JSON (no markdown, no extra text):\n' +
+      '{"hasIssues":true,"corrections":[{"original":"...","corrected":"...","explanation":"...","type":"grammar"}],"overallFeedback":"..."}\n' +
+      'type must be: grammar, expression, or vocabulary.\n' +
+      'Write "explanation" and "overallFeedback" fields in Korean.\n' +
+      'If correct: {"hasIssues":false,"corrections":[],"overallFeedback":"すばらしい！자연스러운 일본어입니다."}',
+  },
+};
 
-const FEEDBACK_SYSTEM_PROMPT =
-  'You are an English language teacher. Analyze the user\'s sentence for:\n' +
-  '1. Grammar errors\n2. Unnatural expressions\n3. Vocabulary improvements\n\n' +
-  'Respond ONLY in this exact JSON (no markdown, no extra text):\n' +
-  '{"hasIssues":true,"corrections":[{"original":"...","corrected":"...","explanation":"...","type":"grammar"}],"overallFeedback":"..."}\n' +
-  'type must be: grammar, expression, or vocabulary.\n' +
-  'If correct: {"hasIssues":false,"corrections":[],"overallFeedback":"Great job! Your English is natural."}';
+const ROLEPLAY_SCENARIOS = [
+  {
+    id: 'restaurant',
+    emoji: '🍽️',
+    title: 'At a Restaurant',
+    desc: '레스토랑에서 주문하기',
+    prompt: 'You are a friendly restaurant waiter/waitress. The user is a customer dining at your restaurant. Greet them warmly, help them order food, answer menu questions, and provide a realistic restaurant experience. Stay in character throughout. Keep responses concise (2-3 sentences).',
+  },
+  {
+    id: 'airport',
+    emoji: '✈️',
+    title: 'At the Airport',
+    desc: '공항 체크인 & 탑승 안내',
+    prompt: 'You are a professional airline check-in agent at an international airport. The user is a passenger. Help them check in, handle baggage questions, issue boarding passes, and direct them to their gate. Stay professional and helpful. Keep responses concise (2-3 sentences).',
+  },
+  {
+    id: 'hotel',
+    emoji: '🏨',
+    title: 'Hotel Check-in',
+    desc: '호텔 체크인 & 서비스',
+    prompt: 'You are a friendly hotel front desk receptionist. The user is a guest checking in. Help them with the check-in process, explain room features and hotel amenities, and handle any requests. Be warm and professional. Keep responses concise (2-3 sentences).',
+  },
+  {
+    id: 'interview',
+    emoji: '💼',
+    title: 'Job Interview',
+    desc: '영어 면접 연습',
+    prompt: 'You are a professional interviewer at a reputable company conducting a job interview in English. Ask common interview questions, respond to answers thoughtfully, and simulate a realistic interview. Be professional but encouraging. Keep responses concise (2-3 sentences).',
+  },
+  {
+    id: 'shopping',
+    emoji: '🛍️',
+    title: 'Shopping',
+    desc: '매장에서 쇼핑하기',
+    prompt: 'You are a helpful store assistant in a clothing or general store. The user is a customer shopping. Help them find items, answer questions about sizes, prices, and availability, suggest alternatives, and assist with their purchase. Keep responses concise (2-3 sentences).',
+  },
+  {
+    id: 'doctor',
+    emoji: '🏥',
+    title: "Doctor's Office",
+    desc: '병원에서 진료받기',
+    prompt: "You are a friendly and professional doctor at a clinic. The user is a patient visiting you. Ask about their symptoms, conduct a typical consultation, explain your assessment simply, and give general advice. Keep it realistic and educational. Keep responses concise (2-3 sentences).",
+  },
+  {
+    id: 'smalltalk',
+    emoji: '☕',
+    title: 'Small Talk',
+    desc: '일상 대화 & 친구 만들기',
+    prompt: 'You are a friendly native English speaker meeting the user for the first time at a social event. Engage in natural small talk — hobbies, travel, work, local recommendations. Be warm, curious, and encouraging. Keep responses concise (2-3 sentences).',
+  },
+  {
+    id: 'customer_service',
+    emoji: '📞',
+    title: 'Customer Service',
+    desc: '전화 & 고객센터 영어',
+    prompt: 'You are a professional customer service representative. The user is a customer calling with an inquiry or problem. Handle their request professionally, ask clarifying questions, offer solutions, and provide a realistic customer service experience. Keep responses concise (2-3 sentences).',
+  },
+];
+
+const ROLEPLAY_SCENARIOS_JA = [
+  {
+    id: 'restaurant_ja', emoji: '🍣', title: 'レストランで', desc: '레스토랑에서 주문하기',
+    prompt: 'あなたは親切な日本料理レストランのウェイターです。お客様（ユーザー）の注文を受け、メニューについての質問に答えてください。自然な日本語で話し、簡潔に（2〜3文）応答してください。',
+  },
+  {
+    id: 'convenience_ja', emoji: '🏪', title: 'コンビニで', desc: '편의점에서 쇼핑하기',
+    prompt: 'あなたはコンビニエンスストアの店員です。お客様（ユーザー）の対応をしてください。商品の場所案内、レジでの会計、ポイントカードの確認など、日常的なコンビニでのやり取りを自然な日本語で行ってください。簡潔に（2〜3文）応答してください。',
+  },
+  {
+    id: 'hotel_ja', emoji: '🏨', title: 'ホテルで', desc: '호텔 체크인 & 서비스',
+    prompt: 'あなたは丁寧なホテルのフロントスタッフです。お客様（ユーザー）のチェックインを手伝い、施設の案内やリクエストに対応してください。丁寧な日本語（敬語）で話し、簡潔に（2〜3文）応答してください。',
+  },
+  {
+    id: 'interview_ja', emoji: '💼', title: '就職面接', desc: '일본어 면접 연습',
+    prompt: 'あなたは日本企業の面接官です。応募者（ユーザー）に面接の質問をしてください。志望動機、自己紹介、強みと弱み等の一般的な質問を行い、ビジネス敬語を使った自然な日本語で対応してください。簡潔に（2〜3文）応答してください。',
+  },
+  {
+    id: 'doctor_ja', emoji: '🏥', title: '病院で', desc: '병원에서 진료받기',
+    prompt: 'あなたは親切なクリニックの医師です。患者（ユーザー）の症状を聞き、典型的な診察の流れで対応してください。わかりやすい日本語で話し、簡潔に（2〜3文）応答してください。',
+  },
+  {
+    id: 'smalltalk_ja', emoji: '☕', title: '日常会話', desc: '일상 대화 & 친구 만들기',
+    prompt: 'あなたは友好的な日本人です。初めて会った人（ユーザー）と自然な日常会話をしてください。趣味、仕事、旅行、食べ物など様々な話題で話し、温かく楽しい雰囲気で会話を進めてください。簡潔に（2〜3文）応答してください。',
+  },
+  {
+    id: 'station_ja', emoji: '🚆', title: '駅・電車で', desc: '역에서 길 묻기',
+    prompt: 'あなたは駅の案内係員です。旅行者（ユーザー）の電車の乗り方、路線の案内、切符の買い方などの質問に答えてください。丁寧でわかりやすい日本語で話し、簡潔に（2〜3文）応答してください。',
+  },
+  {
+    id: 'shopping_ja', emoji: '🛍️', title: 'ショッピング', desc: '쇼핑몰에서 쇼핑하기',
+    prompt: 'あなたはショッピングモールの店員です。お客様（ユーザー）の商品探しをお手伝いし、サイズ・色・在庫などの質問に答えてください。自然な接客日本語で話し、簡潔に（2〜3文）応答してください。',
+  },
+];
 
 const BADGE_DEFS = [
   { id: 'first_session',  emoji: '🥉', label: '첫 대화 완료' },
@@ -50,7 +169,11 @@ function initSupabase() {
 }
 
 // ── State ────────────────────────────────────────────────────────────────────
-let userId = null;
+let userId     = null;
+let activeSlot = 0;
+
+const SLOT_AVATARS = ['🧑', '👩', '🧒', '👨'];
+let activeLang = 'en';
 
 // In-memory caches (loaded from Supabase at init)
 let cachedProfile   = null;
@@ -64,14 +187,18 @@ let isProcessing   = false;
 let recognition    = null;
 let isListening    = false;
 let currentSession = null;
+let activeRoleplay = null;
 
 const ttsSupported = 'speechSynthesis' in window;
 let ttsEnabled    = true;
 let isTTSSpeaking = false;
 let isTTSPaused   = false;
 let lastAiBubble  = null;
+let ttsKeepAlive  = null;
 
-let showTranslation = true;
+let showTranslation  = true;
+let hideAiText       = false;
+let feedbackGenCount = 0;
 
 let weeklyChartInst = null;
 let errorChartInst  = null;
@@ -101,14 +228,27 @@ const feedbackToggleBtn = document.getElementById('feedbackToggleBtn');
 const goalFill  = document.getElementById('goalFill');
 const goalLabel = document.getElementById('goalLabel');
 
-// ── User ID ───────────────────────────────────────────────────────────────────
-function getOrCreateUserId() {
-  let id = localStorage.getItem('eai_user_id');
+// ── User ID (per slot) ────────────────────────────────────────────────────────
+function getOrCreateUserIdForSlot(slot) {
+  const key = `eai_uid_${slot}`;
+  let id = localStorage.getItem(key);
   if (!id) {
-    id = crypto.randomUUID?.() ?? Date.now().toString(36) + Math.random().toString(36).slice(2);
-    localStorage.setItem('eai_user_id', id);
+    if (slot === 0) id = localStorage.getItem('eai_user_id'); // migrate legacy key
+    if (!id) id = crypto.randomUUID?.() ?? Date.now().toString(36) + Math.random().toString(36).slice(2);
+    localStorage.setItem(key, id);
   }
   return id;
+}
+
+// ── Slot display metadata ─────────────────────────────────────────────────────
+function getSlotDisplay(slot) {
+  try { return JSON.parse(localStorage.getItem(`eai_slot_display_${slot}`) || 'null'); }
+  catch { return null; }
+}
+
+function updateSlotDisplay(slot, profile) {
+  if (profile) localStorage.setItem(`eai_slot_display_${slot}`, JSON.stringify({ name: profile.name, level: profile.level }));
+  else         localStorage.removeItem(`eai_slot_display_${slot}`);
 }
 
 // ── DB init ───────────────────────────────────────────────────────────────────
@@ -159,6 +299,7 @@ function getProfile() { return cachedProfile; }
 
 function saveProfile(p) {
   cachedProfile = p;
+  updateSlotDisplay(activeSlot, p);
   if (!supa) return;
   supa.from('profiles').upsert({
     user_id: userId, name: p.name, level: p.level, goals: p.goals,
@@ -202,6 +343,30 @@ function appendFeedbackLog(items) {
   }))).then(({ error }) => { if (error) console.error('appendFeedbackLog', error); });
 }
 
+// ── Review notes (localStorage, per slot) ────────────────────────────────────
+let cachedReviews = [];
+
+function getReviews() { return cachedReviews; }
+
+function saveReviews() { try { localStorage.setItem(`eai_reviews_${activeSlot}`, JSON.stringify(cachedReviews)); } catch {} }
+
+function addReview(item) {
+  if (cachedReviews.some(r => r.original === item.original && r.corrected === item.corrected)) return false;
+  cachedReviews = [{ id: genId(), ...item, addedAt: new Date().toISOString(), learned: false }, ...cachedReviews];
+  saveReviews();
+  return true;
+}
+
+function removeReview(id) {
+  cachedReviews = cachedReviews.filter(r => r.id !== id);
+  saveReviews();
+}
+
+function toggleReviewLearned(id) {
+  cachedReviews = cachedReviews.map(r => r.id === id ? { ...r, learned: !r.learned } : r);
+  saveReviews();
+}
+
 // ── Badges DB ─────────────────────────────────────────────────────────────────
 function getBadges() { return cachedBadges; }
 
@@ -238,6 +403,92 @@ async function clearChatMessages() {
   if (!supa) return;
   const { error } = await supa.from('chat_messages').delete().eq('user_id', userId);
   if (error) console.error('clearChatMessages', error);
+}
+
+// ── Profile slot selector ─────────────────────────────────────────────────────
+const LEVEL_LABELS = { beginner: 'Beginner', intermediate: 'Intermediate', advanced: 'Advanced' };
+
+function renderProfileSlots() {
+  const container = document.getElementById('profileSlotSelector');
+  if (!container) return;
+  container.innerHTML = `
+    <div class="slot-selector">
+      ${[0,1,2,3].map(slot => {
+        const d = getSlotDisplay(slot);
+        const isActive = slot === activeSlot;
+        return `<button class="slot-card${isActive ? ' active' : ''}${!d ? ' empty' : ''}" data-slot="${slot}">
+          <div class="slot-avatar">${d ? SLOT_AVATARS[slot] : '＋'}</div>
+          <div class="slot-name">${d ? toHtml(d.name || 'Learner') : 'New Profile'}</div>
+          ${d ? `<div class="slot-level">${LEVEL_LABELS[d.level] || d.level}</div>` : ''}
+          ${isActive ? '<span class="slot-active-badge">Active</span>' : ''}
+        </button>`;
+      }).join('')}
+    </div>
+    <p class="slot-hint">Click another slot to switch profiles. Each profile has its own chat, stats, and review data.</p>`;
+
+  container.querySelectorAll('.slot-card').forEach(card => {
+    card.addEventListener('click', () => switchProfileSlot(parseInt(card.dataset.slot)));
+  });
+}
+
+function updateHeaderProfile() {
+  const el = document.getElementById('headerProfile');
+  if (!el) return;
+  const d = getSlotDisplay(activeSlot);
+  el.textContent = d ? `${SLOT_AVATARS[activeSlot]} ${d.name || 'Learner'}` : '';
+}
+
+function setActiveLang(lang) {
+  activeLang = lang;
+  localStorage.setItem(`eai_lang_${activeSlot}`, lang);
+  const cfg = LANG_CONFIG[lang];
+  if (recognition) recognition.lang = cfg.sttLang;
+  const inputEl = document.getElementById('userInput');
+  if (inputEl) inputEl.placeholder = cfg.inputPlaceholder;
+  const langBtn = document.getElementById('langBtn');
+  if (langBtn) langBtn.textContent = `${cfg.flag} ${cfg.name}`;
+  populateVoices();
+  if (messages.length === 0) showWelcome();
+  // sync profile form radio
+  document.querySelectorAll('input[name="lang"]').forEach(el => { el.checked = el.value === lang; });
+}
+
+async function switchProfileSlot(slot) {
+  if (slot === activeSlot) return;
+
+  endSession();
+  stopTTS();
+  endRoleplay();
+
+  activeSlot = slot;
+  localStorage.setItem('eai_active_slot', String(slot));
+  userId = getOrCreateUserIdForSlot(slot);
+
+  cachedProfile   = null;
+  cachedSessions  = [];
+  cachedFeedbacks = [];
+  cachedBadges    = [];
+  cachedStreak    = { lastStudyDate: null, currentStreak: 0 };
+  messages        = [];
+  currentSession  = null;
+  cachedReviews   = JSON.parse(localStorage.getItem(`eai_reviews_${slot}`) || '[]');
+  activeLang      = localStorage.getItem(`eai_lang_${slot}`) || 'en';
+
+  await dbInit();
+
+  chatEl.innerHTML = '';
+  lastAiBubble = null;
+  feedbackContent.innerHTML = `<div class="feedback-placeholder">${LANG_CONFIG[activeLang].feedbackPlaceholder}</div>`;
+  setHideTextMode(false);
+  updateGoalBar();
+  updateHeaderProfile();
+  setActiveLang(activeLang);
+
+  if (messages.length === 0) showWelcome();
+  else { messages.forEach(m => renderMessage(m.role, m.content, m.timestamp, false)); scrollBottom(); }
+
+  if (!getProfile()) history.replaceState(null, '', '#/profile');
+  router();
 }
 
 // ── Profile card ──────────────────────────────────────────────────────────────
@@ -292,22 +543,28 @@ function renderSavedProfileCard() {
 async function deleteProfileData() {
   if (!confirm('저장된 프로필을 삭제할까요?')) return;
   cachedProfile = null;
+  updateSlotDisplay(activeSlot, null);
   if (supa) {
     const { error } = await supa.from('profiles').delete().eq('user_id', userId);
     if (error) console.error('deleteProfileData', error);
   }
+  renderProfileSlots();
   renderSavedProfileCard();
   loadProfileForm();
   updateGoalBar();
+  updateHeaderProfile();
 }
 
 // ── Profile helpers ───────────────────────────────────────────────────────────
 function buildSystemPrompt() {
+  const base = activeRoleplay
+    ? activeRoleplay.prompt + ' Continue the roleplay naturally after each user message.'
+    : LANG_CONFIG[activeLang].systemPrompt;
   const p = getProfile();
-  if (!p) return SYSTEM_PROMPT;
+  if (!p) return base;
   const goalMap = { daily: 'daily conversation', business: 'business English', travel: 'travel English', exam: 'exam preparation' };
   const goals   = (p.goals || []).map(g => goalMap[g] || g).join(', ') || 'general';
-  return SYSTEM_PROMPT + ` User profile: Level=${p.level || 'intermediate'}, Goals=${goals}. Adjust vocabulary and complexity accordingly.`;
+  return base + ` User profile: Level=${p.level || 'intermediate'}, Goals=${goals}. Adjust vocabulary and complexity accordingly.`;
 }
 
 // ── Session lifecycle ─────────────────────────────────────────────────────────
@@ -353,8 +610,13 @@ function addSessionFeedbacks(items) {
 }
 
 // ── Streak & badges ───────────────────────────────────────────────────────────
+function localDateStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
 function updateStreak() {
-  const today  = new Date().toISOString().split('T')[0];
+  const today  = localDateStr();
   const streak = getStreak();
   if (!streak.lastStudyDate) { saveStreak({ lastStudyDate: today, currentStreak: 1 }); return; }
   const diff = Math.round((new Date(today) - new Date(streak.lastStudyDate)) / 86400000);
@@ -396,7 +658,7 @@ function showBadgeToast(badge) {
 
 // ── Goal bar ──────────────────────────────────────────────────────────────────
 function getDailyTurnCount() {
-  const today = new Date().toISOString().split('T')[0];
+  const today = localDateStr();
   return getSessions()
     .filter(s => (s.date || '').startsWith(today))
     .reduce((sum, s) => sum + (s.turnCount || 0), 0);
@@ -451,7 +713,35 @@ function renderMessage(role, content, timestamp, animate = true) {
   const el = document.createElement('div');
   el.className = `msg ${cssRole}`;
   if (!animate) el.style.animation = 'none';
-  el.innerHTML = `<div class="bubble">${toHtml(content)}</div><time class="ts">${fmtTime(timestamp)}</time>`;
+
+  const bubbleEl = document.createElement('div');
+  bubbleEl.className = 'bubble';
+  bubbleEl.innerHTML = toHtml(content);
+
+  const footerEl = document.createElement('div');
+  footerEl.className = 'msg-footer';
+
+  if (role === 'assistant') {
+    const replayBtn = document.createElement('button');
+    replayBtn.className = 'btn-replay';
+    replayBtn.title = '다시 듣기';
+    replayBtn.textContent = '🔊';
+    replayBtn.addEventListener('click', () => speak(content, bubbleEl));
+    footerEl.appendChild(replayBtn);
+
+    if (hideAiText) {
+      bubbleEl.classList.add('text-hidden');
+      attachRevealOnClick(bubbleEl);
+    }
+  }
+
+  const tsEl = document.createElement('time');
+  tsEl.className = 'ts';
+  tsEl.textContent = fmtTime(timestamp);
+  footerEl.appendChild(tsEl);
+
+  el.appendChild(bubbleEl);
+  el.appendChild(footerEl);
   chatEl.appendChild(el);
   return el;
 }
@@ -526,29 +816,45 @@ function updateTTSBtnState() {
 
 function stopTTS() {
   if (!ttsSupported) return;
+  clearInterval(ttsKeepAlive); ttsKeepAlive = null;
   if (isTTSSpeaking || isTTSPaused) speechSynthesis.cancel();
   isTTSSpeaking = false; isTTSPaused = false;
   updateTTSBtnState();
   lastAiBubble?.querySelectorAll('.tts-word.active').forEach(s => s.classList.remove('active'));
 }
 
+function stripEmoji(text) {
+  return text.replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, '').replace(/\s+/g, ' ').trim();
+}
+
 function speak(text, bubbleEl) {
   if (!ttsSupported || !ttsEnabled) return;
   stopTTS();
-  const utter  = new SpeechSynthesisUtterance(text);
-  const voice  = getSelectedVoice();
+  const stripped = stripEmoji(text);
+  const utter    = new SpeechSynthesisUtterance(stripped);
+  const voice    = getSelectedVoice();
   if (voice) utter.voice = voice;
-  utter.rate   = parseFloat(rateSlider?.value ?? '1');
-  utter.pitch  = parseFloat(pitchSlider?.value ?? '1');
-  utter.lang   = 'en-US';
-  bubbleEl.innerHTML = wrapWordsForHighlight(text);
-  utter.onstart    = () => { isTTSSpeaking = true;  isTTSPaused = false; updateTTSBtnState(); };
+  utter.rate  = parseFloat(rateSlider?.value ?? '1');
+  utter.pitch = parseFloat(pitchSlider?.value ?? '1');
+  utter.lang  = LANG_CONFIG[activeLang].ttsLang;
+  // Use stripped text for span positions so charIndex aligns with utterance
+  bubbleEl.innerHTML = wrapWordsForHighlight(stripped);
+  utter.onstart = () => {
+    isTTSSpeaking = true; isTTSPaused = false; updateTTSBtnState();
+    // Chrome pauses TTS after ~15s — keep it alive
+    ttsKeepAlive = setInterval(() => {
+      if (speechSynthesis.speaking && !isTTSPaused) {
+        speechSynthesis.pause(); speechSynthesis.resume();
+      }
+    }, 14000);
+  };
   utter.onboundary = (e) => {
     if (e.name !== 'word') return;
     bubbleEl.querySelectorAll('.tts-word.active').forEach(s => s.classList.remove('active'));
     bubbleEl.querySelector(`.tts-word[data-start="${e.charIndex}"]`)?.classList.add('active');
   };
   utter.onend = utter.onerror = () => {
+    clearInterval(ttsKeepAlive); ttsKeepAlive = null;
     isTTSSpeaking = false; isTTSPaused = false; updateTTSBtnState();
     bubbleEl.querySelectorAll('.tts-word.active').forEach(s => s.classList.remove('active'));
   };
@@ -557,7 +863,10 @@ function speak(text, bubbleEl) {
 
 function populateVoices() {
   if (!ttsSupported) return;
-  const voices = speechSynthesis.getVoices().filter(v => v.lang.startsWith('en'));
+  const langCode = LANG_CONFIG[activeLang].ttsLang;
+  const prefix   = langCode.split('-')[0];
+  const all      = speechSynthesis.getVoices();
+  const voices   = all.filter(v => v.lang.startsWith(prefix));
   if (!voices.length) return;
   const prev = voiceSelect.value;
   voiceSelect.innerHTML = '';
@@ -569,7 +878,7 @@ function populateVoices() {
   const prevOpt = Array.from(voiceSelect.options).find(o => o.value === prev);
   if (prevOpt) { voiceSelect.value = prev; }
   else {
-    const pref = voices.find(v => v.name.includes('Google') && v.lang === 'en-US') || voices.find(v => v.lang === 'en-US') || voices[0];
+    const pref = voices.find(v => v.lang === langCode) || voices[0];
     if (pref) voiceSelect.value = pref.name;
   }
 }
@@ -623,7 +932,7 @@ async function doFeedbackFetch(model, apiMsgs) {
 }
 
 async function callFeedback(text) {
-  const msgs = [{ role: 'system', content: FEEDBACK_SYSTEM_PROMPT }, { role: 'user', content: text }];
+  const msgs = [{ role: 'system', content: LANG_CONFIG[activeLang].feedbackPrompt }, { role: 'user', content: text }];
   try { return await doFeedbackFetch(PRIMARY_MODEL, msgs); }
   catch (e) {
     if (e.status === 429 || e.status === 503 || e.status === 404) return doFeedbackFetch(FALLBACK_MODEL, msgs);
@@ -649,8 +958,9 @@ async function doTextFetch(model, apiMsgs) {
 }
 
 async function callTranslation(text) {
+  const srcLang = activeLang === 'ja' ? 'Japanese' : 'English';
   const msgs = [
-    { role: 'system', content: 'Translate the following English text to Korean. Respond ONLY with the Korean translation. Do not add any explanations or extra text.' },
+    { role: 'system', content: `Translate the following ${srcLang} text to Korean. Respond ONLY with the Korean translation. Do not add any explanations or extra text.` },
     { role: 'user', content: text },
   ];
   try { return await doTextFetch(PRIMARY_MODEL, msgs); }
@@ -684,7 +994,10 @@ function renderFeedback(data) {
     card.innerHTML = `
       <div class="feedback-card-header">
         <span class="badge badge-${type}">${type}</span>
-        <button class="btn-feedback-card-toggle" aria-expanded="false">▾</button>
+        <div class="feedback-card-actions">
+          <button class="btn-review-add" title="Add to Review">📌 Review</button>
+          <button class="btn-feedback-card-toggle" aria-expanded="false">▾</button>
+        </div>
       </div>
       <div class="feedback-change">
         <span class="original">${toHtml(c.original||'')}</span>
@@ -699,6 +1012,12 @@ function renderFeedback(data) {
       det.hidden = open;
       btn.setAttribute('aria-expanded', String(!open));
       btn.textContent = open ? '▾' : '▴';
+    });
+    card.querySelector('.btn-review-add').addEventListener('click', (e) => {
+      const btn = e.currentTarget;
+      const added = addReview({ type, original: c.original||'', corrected: c.corrected||'', explanation: c.explanation||'' });
+      btn.textContent = added ? '✅ Added' : '✅ Already added';
+      btn.disabled = true;
     });
     frag.appendChild(card);
   });
@@ -723,11 +1042,13 @@ async function fetchStream(apiMessages, model) {
   hideLoading();
   clearWelcome();
 
-  const ts      = new Date().toISOString();
-  const msgEl   = document.createElement('div'); msgEl.className = 'msg ai';
-  const bubbleEl= document.createElement('div'); bubbleEl.className = 'bubble streaming';
-  const tsEl    = document.createElement('time');tsEl.className = 'ts'; tsEl.textContent = fmtTime(ts);
-  msgEl.appendChild(bubbleEl); msgEl.appendChild(tsEl);
+  const ts       = new Date().toISOString();
+  const msgEl    = document.createElement('div'); msgEl.className = 'msg ai';
+  const bubbleEl = document.createElement('div'); bubbleEl.className = 'bubble streaming';
+  const footerEl = document.createElement('div'); footerEl.className = 'msg-footer';
+  const tsEl     = document.createElement('time'); tsEl.className = 'ts'; tsEl.textContent = fmtTime(ts);
+  footerEl.appendChild(tsEl);
+  msgEl.appendChild(bubbleEl); msgEl.appendChild(footerEl);
   chatEl.appendChild(msgEl);
   lastAiBubble = bubbleEl;
 
@@ -745,6 +1066,19 @@ async function fetchStream(apiMessages, model) {
   }
   bubbleEl.classList.remove('streaming');
   if (!fullText.trim()) { msgEl.remove(); lastAiBubble = null; throw new Error('Empty response'); }
+
+  const replayBtn = document.createElement('button');
+  replayBtn.className = 'btn-replay';
+  replayBtn.title = '다시 듣기';
+  replayBtn.textContent = '🔊';
+  replayBtn.addEventListener('click', () => speak(fullText, bubbleEl));
+  footerEl.prepend(replayBtn);
+
+  if (hideAiText) {
+    bubbleEl.classList.add('text-hidden');
+    attachRevealOnClick(bubbleEl);
+  }
+
   return fullText;
 }
 
@@ -780,6 +1114,8 @@ async function sendMessage(rawText) {
   showLoading();
   showFeedbackLoading();
 
+  feedbackGenCount++;
+  const myGen           = feedbackGenCount;
   const feedbackPromise = callFeedback(text).catch(() => null);
   const sessionId       = currentSession.sessionId;
   const prevTurns       = getDailyTurnCount();
@@ -837,6 +1173,7 @@ async function sendMessage(rawText) {
   }
 
   const feedbackData = await feedbackPromise;
+  if (myGen !== feedbackGenCount) return; // superseded by a newer send
   if (feedbackData) {
     renderFeedback(feedbackData);
     if (feedbackData.corrections?.length) {
@@ -854,16 +1191,129 @@ async function sendMessage(rawText) {
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
+// ── Hide text mode ────────────────────────────────────────────────────────────
+function attachRevealOnClick(bubbleEl) {
+  if (bubbleEl.dataset.revealBound) return;
+  bubbleEl.dataset.revealBound = '1';
+  bubbleEl.addEventListener('click', () => {
+    if (bubbleEl.classList.contains('text-hidden')) {
+      bubbleEl.classList.remove('text-hidden');
+    }
+  });
+}
+
+function setHideTextMode(on) {
+  hideAiText = on;
+  document.querySelectorAll('.msg.ai .bubble').forEach(b => {
+    b.classList.toggle('text-hidden', on);
+    if (on) attachRevealOnClick(b);
+  });
+  const btn = document.getElementById('hideTextBtn');
+  if (btn) {
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-pressed', String(on));
+    btn.textContent = on ? '🙈 가리기 ON' : '👁 가리기 OFF';
+  }
+}
+
+// ── Roleplay ──────────────────────────────────────────────────────────────────
+function openRoleplayModal() {
+  const scenarios = activeLang === 'ja' ? ROLEPLAY_SCENARIOS_JA : ROLEPLAY_SCENARIOS;
+  const grid = document.getElementById('scenarioGrid');
+  grid.innerHTML = scenarios.map(s => `
+    <button class="scenario-card" data-id="${s.id}">
+      <span class="scenario-emoji">${s.emoji}</span>
+      <span class="scenario-title">${s.title}</span>
+      <span class="scenario-desc">${s.desc}</span>
+    </button>`).join('');
+  // Replace node to drop any previously accumulated listeners
+  const fresh = grid.cloneNode(true);
+  grid.parentNode.replaceChild(fresh, grid);
+  fresh.addEventListener('click', e => {
+    const card = e.target.closest('.scenario-card');
+    if (!card) return;
+    const scenario = scenarios.find(s => s.id === card.dataset.id);
+    if (scenario) startRoleplay(scenario);
+  });
+  document.getElementById('roleplayModal').classList.remove('hidden');
+}
+
+function closeRoleplayModal() {
+  document.getElementById('roleplayModal').classList.add('hidden');
+}
+
+function updateRoleplayBanner() {
+  const banner = document.getElementById('roleplayBanner');
+  const title  = document.getElementById('roleplayBannerTitle');
+  if (activeRoleplay) {
+    title.textContent = `${activeRoleplay.emoji} ${activeRoleplay.title}`;
+    banner.classList.remove('hidden');
+  } else {
+    banner.classList.add('hidden');
+  }
+  document.getElementById('roleplayBtn')?.classList.toggle('active', !!activeRoleplay);
+}
+
+async function startRoleplay(scenario) {
+  closeRoleplayModal();
+
+  if (!document.getElementById('view-chat').classList.contains('active')) {
+    history.pushState(null, '', '#/chat');
+    showView('chat');
+  }
+
+  endSession();
+  messages = [];
+  chatEl.innerHTML = '';
+  await clearChatMessages();
+  stopTTS();
+  lastAiBubble = null;
+  feedbackContent.innerHTML = `<div class="feedback-placeholder">${LANG_CONFIG[activeLang].feedbackPlaceholder}</div>`;
+  updateGoalBar();
+
+  activeRoleplay = scenario;
+  updateRoleplayBanner();
+
+  isProcessing = true;
+  sendBtn.disabled = true;
+  if (!currentSession) startSession();
+
+  const openingMessages = [
+    { role: 'system', content: scenario.prompt + ' Start the conversation by briefly setting the scene and greeting the user. 2-3 sentences max.' },
+    { role: 'user', content: '[start]' },
+  ];
+
+  showLoading();
+  try {
+    const aiText = await callAI(openingMessages);
+    const ts = new Date().toISOString();
+    messages.push({ role: 'assistant', content: aiText, timestamp: ts });
+    scrollBottom();
+    if (ttsEnabled) speak(aiText, lastAiBubble);
+  } catch {
+    showError('롤플레이를 시작할 수 없습니다. 다시 시도해 주세요.');
+  } finally {
+    isProcessing = false;
+    sendBtn.disabled = false;
+  }
+}
+
+function endRoleplay() {
+  activeRoleplay = null;
+  updateRoleplayBanner();
+}
+
 function showView(name) {
-  const valid = ['chat','stats','history','profile'];
-  const vname = valid.includes(name) ? name : 'chat';
+  const valid = ['chat','stats','review','profile'];
+  const resolved = name === 'history' ? 'stats' : name;
+  const vname = valid.includes(resolved) ? resolved : 'chat';
 
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === `view-${vname}`));
   document.querySelectorAll('.tab-link').forEach(a => a.classList.toggle('active', a.dataset.view === vname));
   document.querySelector('.footer').style.display = vname === 'chat' ? '' : 'none';
 
   if (vname === 'stats')   renderStatsView();
-  if (vname === 'history') renderHistoryView();
+  if (vname === 'review')  renderReviewView();
   if (vname === 'profile') loadProfileForm();
 }
 
@@ -923,6 +1373,11 @@ function renderStatsView() {
         <div class="section-title">Badges</div>
         ${buildBadgesHTML(badges)}
       </div>
+
+      <div class="section-block">
+        <div class="section-title">📝 Session History <span class="count-badge">${sessions.length}</span></div>
+        ${buildHistoryHTML(sessions)}
+      </div>
     </div>`;
 
   if (typeof Chart !== 'undefined') {
@@ -952,13 +1407,27 @@ function renderStatsView() {
       });
     }
   }
+
+  const sortedSessions = sessions.slice().sort((a, b) => new Date(b.date) - new Date(a.date));
+  document.getElementById('sessionList')?.addEventListener('click', e => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const { action, id } = btn.dataset;
+    const session = sortedSessions.find(s => s.sessionId === id);
+    if (action === 'view')   toggleDetail(id, session);
+    if (action === 'export') exportSession(session);
+    if (action === 'delete') confirmDelete(id);
+  });
 }
 
 function buildWeekData(sessions) {
   const days = [];
   for (let i = 6; i >= 0; i--) {
     const d = new Date(); d.setDate(d.getDate() - i);
-    const ds    = d.toISOString().split('T')[0];
+    const year  = d.getFullYear();
+    const month = String(d.getMonth()+1).padStart(2,'0');
+    const day   = String(d.getDate()).padStart(2,'0');
+    const ds    = `${year}-${month}-${day}`;
     const label = d.toLocaleDateString('ko-KR', { month: 'numeric', day: 'numeric' });
     const turns = sessions.filter(s => (s.date||'').startsWith(ds)).reduce((sum, s) => sum + (s.turnCount||0), 0);
     days.push({ label, turns });
@@ -1001,25 +1470,89 @@ function buildBadgesHTML(earned) {
     </div>`).join('')}</div>`;
 }
 
-// ── History view ──────────────────────────────────────────────────────────────
-function renderHistoryView() {
-  const sessions = getSessions().slice().sort((a, b) => new Date(b.date) - new Date(a.date));
-  const el = document.getElementById('historyContent');
+// ── Review view ───────────────────────────────────────────────────────────────
+let reviewFilter = 'all';
 
-  if (!sessions.length) {
-    el.innerHTML = '<div class="page-wrap"><h2 class="page-title">📝 History</h2><p class="empty-msg">No sessions yet. Start a conversation in Chat!</p></div>';
-    return;
-  }
+function renderReviewView() {
+  const el = document.getElementById('reviewContent');
+  const all = getReviews();
 
-  el.innerHTML = `<div class="page-wrap">
-    <h2 class="page-title">📝 History <span class="count-badge">${sessions.length}</span></h2>
-    <ul class="session-list" id="sessionList"></ul></div>`;
+  const FILTERS = [
+    { key: 'all',        label: 'All' },
+    { key: 'grammar',    label: 'Grammar' },
+    { key: 'expression', label: 'Expression' },
+    { key: 'vocabulary', label: 'Vocabulary' },
+    { key: 'learned',    label: '✅ Learned' },
+  ];
 
-  const listEl = el.querySelector('#sessionList');
-  sessions.forEach(s => {
-    const li = document.createElement('li');
-    li.className = 'session-item';
-    li.innerHTML = `
+  const filtered = all.filter(r => {
+    if (reviewFilter === 'all')     return true;
+    if (reviewFilter === 'learned') return r.learned;
+    return r.type === reviewFilter && !r.learned;
+  });
+
+  const learnedCount = all.filter(r => r.learned).length;
+
+  el.innerHTML = `
+    <div class="page-wrap">
+      <h2 class="page-title">📚 Review Notes <span class="count-badge">${all.length}</span></h2>
+      <div class="review-filter-bar">
+        ${FILTERS.map(f => `<button class="review-filter-btn${reviewFilter === f.key ? ' active' : ''}" data-filter="${f.key}">${f.label}</button>`).join('')}
+      </div>
+      ${!all.length
+        ? '<p class="empty-msg">Click 📌 Review in the feedback panel to add items here.</p>'
+        : !filtered.length
+          ? '<p class="empty-msg">No items in this category.</p>'
+          : `<ul class="review-list">${filtered.map(r => `
+            <li class="review-card${r.learned ? ' learned' : ''}" data-id="${r.id}">
+              <div class="review-card-header">
+                <span class="badge badge-${r.type}">${r.type}</span>
+                <span class="review-date">${fmtDate(r.addedAt)}</span>
+              </div>
+              <div class="review-change">
+                <span class="original">${toHtml(r.original)}</span>
+                <span class="arrow">→</span>
+                <span class="corrected">${toHtml(r.corrected)}</span>
+              </div>
+              ${r.explanation ? `<div class="review-explanation">${toHtml(r.explanation)}</div>` : ''}
+              <div class="review-card-footer">
+                <button class="btn-review-learned" data-action="learned" data-id="${r.id}">
+                  ${r.learned ? '↩ Mark as Learning' : '✅ Mark as Learned'}
+                </button>
+                <button class="btn-review-delete" data-action="delete" data-id="${r.id}">🗑 Delete</button>
+              </div>
+            </li>`).join('')}
+          </ul>`
+      }
+      ${learnedCount > 0 && all.length > 0 ? `<p class="review-summary">Learned ${learnedCount} / Total ${all.length}</p>` : ''}
+    </div>`;
+
+  el.querySelector('.review-filter-bar')?.addEventListener('click', e => {
+    const btn = e.target.closest('.review-filter-btn');
+    if (!btn) return;
+    reviewFilter = btn.dataset.filter;
+    renderReviewView();
+  });
+
+  el.querySelector('.review-list')?.addEventListener('click', e => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const { action, id } = btn.dataset;
+    if (action === 'delete') {
+      if (!confirm('이 항목을 삭제할까요?')) return;
+      removeReview(id);
+    } else if (action === 'learned') {
+      toggleReviewLearned(id);
+    }
+    renderReviewView();
+  });
+}
+
+function buildHistoryHTML(allSessions) {
+  const sessions = allSessions.slice().sort((a, b) => new Date(b.date) - new Date(a.date));
+  if (!sessions.length) return '<p class="empty-msg">No sessions yet. Start a conversation in Chat!</p>';
+  return `<ul class="session-list" id="sessionList">${sessions.map(s => `
+    <li class="session-item">
       <div class="session-meta">
         <span class="session-date">${fmtDate(s.date)}</span>
         <span class="session-chips">
@@ -1033,27 +1566,16 @@ function renderHistoryView() {
         <button class="btn-sm btn-outline"  data-action="export" data-id="${s.sessionId}">Export</button>
         <button class="btn-sm btn-danger-sm" data-action="delete" data-id="${s.sessionId}">Delete</button>
       </div>
-      <div class="session-detail hidden" id="detail-${s.sessionId}"></div>`;
-    listEl.appendChild(li);
-  });
-
-  listEl.addEventListener('click', e => {
-    const btn = e.target.closest('[data-action]');
-    if (!btn) return;
-    const { action, id } = btn.dataset;
-    const session = sessions.find(s => s.sessionId === id);
-    if (action === 'view')   toggleDetail(id, session);
-    if (action === 'export') exportSession(session);
-    if (action === 'delete') confirmDelete(id);
-  });
+      <div class="session-detail hidden" id="detail-${s.sessionId}"></div>
+    </li>`).join('')}</ul>`;
 }
 
 function toggleDetail(id, session) {
   const det = document.getElementById(`detail-${id}`);
   if (!det) return;
-  const open = !det.classList.contains('hidden');
-  det.classList.toggle('hidden', open);
-  if (!open) return;
+  const wasHidden = det.classList.contains('hidden');
+  det.classList.toggle('hidden', !wasHidden);
+  if (!wasHidden) return; // was open, now closed — nothing more to do
   const msgs = session?.messages || [];
   if (!msgs.length) { det.innerHTML = '<p class="empty-msg">No messages recorded in this session.</p>'; return; }
   det.innerHTML = `<div class="mini-chat">${msgs.map(m => `
@@ -1077,12 +1599,14 @@ function exportSession(session) {
 async function confirmDelete(id) {
   if (!confirm('이 세션을 삭제할까요?')) return;
   await deleteSession(id);
-  renderHistoryView();
+  renderStatsView();
 }
 
 // ── Profile form ──────────────────────────────────────────────────────────────
 function loadProfileForm() {
+  renderProfileSlots();
   renderSavedProfileCard();
+  document.querySelectorAll('input[name="lang"]').forEach(el => { el.checked = el.value === activeLang; });
   const p = getProfile();
   document.getElementById('profileWelcome').classList.toggle('hidden', !!p);
   if (!p) return;
@@ -1098,8 +1622,12 @@ function saveProfileForm() {
   const level   = document.querySelector('input[name="level"]:checked')?.value || 'intermediate';
   const goals   = [...document.querySelectorAll('input[name="goals"]:checked')].map(e => e.value);
   const target  = parseInt(document.querySelector('input[name="target"]:checked')?.value || '10', 10);
+  const lang    = document.querySelector('input[name="lang"]:checked')?.value || 'en';
+  setActiveLang(lang);
   saveProfile({ name, level, goals, dailyTarget: target });
   updateGoalBar();
+  renderProfileSlots();
+  updateHeaderProfile();
   renderSavedProfileCard();
   if (isFirst) { location.hash = '#/chat'; }
   else {
@@ -1118,27 +1646,38 @@ function setupSpeech() {
   if (!SR) { micBtn.disabled = true; micBtn.title = '이 브라우저는 음성 입력을 지원하지 않습니다 (Chrome/Edge 필요)'; return; }
 
   recognition = new SR();
-  recognition.lang = 'en-US'; recognition.continuous = false; recognition.interimResults = true;
+  recognition.lang = LANG_CONFIG[activeLang].sttLang; recognition.continuous = true; recognition.interimResults = true;
+
+  let accumulatedFinal = '';
 
   recognition.onstart = () => {
+    accumulatedFinal = '';
     isListening = true;
     micBtn.classList.add('listening'); micBtn.setAttribute('aria-label', 'Stop voice input');
     micIcon.style.display = 'none'; stopIcon.style.display = 'block';
     showInterim('🎤 Listening…');
   };
   recognition.onresult = (e) => {
-    let final = '', interim = '';
-    for (const r of e.results) { (r.isFinal ? (final += r[0].transcript) : (interim += r[0].transcript)); }
-    if (final) { inputEl.value = final; inputEl.dispatchEvent(new Event('input')); hideInterim(); }
-    else if (interim) showInterim(`🎤 ${interim}`);
+    let interim = '';
+    for (const r of Array.from(e.results).slice(e.resultIndex)) {
+      if (r.isFinal) accumulatedFinal += r[0].transcript + ' ';
+      else interim += r[0].transcript;
+    }
+    const preview = (accumulatedFinal + interim).trim();
+    if (preview) showInterim(`🎤 ${preview}`);
   };
   recognition.onend = () => {
     isListening = false;
     micBtn.classList.remove('listening'); micBtn.setAttribute('aria-label', 'Start voice input');
-    micIcon.style.display = 'block'; stopIcon.style.display = 'none'; hideInterim();
+    micIcon.style.display = 'block'; stopIcon.style.display = 'none';
+    hideInterim();
+    const text = accumulatedFinal.trim();
+    if (text) { inputEl.value = text; inputEl.dispatchEvent(new Event('input')); }
+    accumulatedFinal = '';
   };
   recognition.onerror = (e) => {
     isListening = false;
+    accumulatedFinal = '';
     micBtn.classList.remove('listening'); micIcon.style.display = 'block'; stopIcon.style.display = 'none'; hideInterim();
     if (e.error === 'not-allowed') showError('⚠️ 마이크 권한이 거부되었습니다.');
   };
@@ -1149,6 +1688,32 @@ function setupEvents() {
   sendBtn.addEventListener('click', () => sendMessage(inputEl.value));
   inputEl.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(inputEl.value); } });
   inputEl.addEventListener('input', () => { inputEl.style.height = 'auto'; inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px'; });
+
+  document.getElementById('langBtn')?.addEventListener('click', () => {
+    setActiveLang(activeLang === 'en' ? 'ja' : 'en');
+  });
+
+  document.getElementById('roleplayBtn')?.addEventListener('click', () => {
+    if (activeRoleplay) endRoleplay(); else openRoleplayModal();
+  });
+  document.getElementById('roleplayModalClose')?.addEventListener('click', closeRoleplayModal);
+  document.getElementById('roleplayModal')?.addEventListener('click', e => {
+    if (e.target === document.getElementById('roleplayModal')) closeRoleplayModal();
+  });
+  document.getElementById('roleplayEndBtn')?.addEventListener('click', endRoleplay);
+  document.getElementById('customScenarioBtn')?.addEventListener('click', () => {
+    const inputEl = document.getElementById('customScenarioInput');
+    const text = inputEl.value.trim();
+    if (!text) { inputEl.focus(); return; }
+    inputEl.value = '';
+    startRoleplay({
+      id: 'custom',
+      emoji: '✏️',
+      title: '커스텀 롤플레이',
+      desc: text.slice(0, 40),
+      prompt: `You are participating in a custom roleplay. The scenario (described in Korean or English): "${text}". Understand the scenario, play the appropriate role, and make the conversation realistic and helpful for an English learner. Keep responses concise (2-3 sentences).`,
+    });
+  });
 
   micBtn.addEventListener('click', () => {
     if (!recognition) return;
@@ -1162,8 +1727,9 @@ function setupEvents() {
     messages = [];
     chatEl.innerHTML = '';
     await clearChatMessages();
+    endRoleplay();
     showWelcome(); stopTTS(); lastAiBubble = null;
-    feedbackContent.innerHTML = '<div class="feedback-placeholder">Send a message to get feedback on your English.</div>';
+    feedbackContent.innerHTML = `<div class="feedback-placeholder">${LANG_CONFIG[activeLang].feedbackPlaceholder}</div>`;
     updateGoalBar();
   });
 
@@ -1188,12 +1754,23 @@ function setupEvents() {
         supa.from('chat_messages').delete().eq('user_id', userId),
       ]);
     }
+    // Clear all slot-specific localStorage keys for current slot
+    ['eai_uid_', 'eai_lang_', 'eai_reviews_', 'eai_slot_display_'].forEach(prefix => {
+      try { localStorage.removeItem(`${prefix}${activeSlot}`); } catch {}
+    });
     cachedProfile = null; cachedSessions = []; cachedFeedbacks = [];
     cachedBadges = []; cachedStreak = { lastStudyDate: null, currentStreak: 0 };
-    messages = []; currentSession = null;
+    cachedReviews = []; messages = []; currentSession = null;
+    chatEl.innerHTML = '';
+    updateHeaderProfile();
+    renderProfileSlots();
     history.replaceState(null, '', '#/profile');
     router();
     alert('모든 데이터가 삭제되었습니다.');
+  });
+
+  document.getElementById('hideTextBtn')?.addEventListener('click', () => {
+    setHideTextMode(!hideAiText);
   });
 
   document.getElementById('translationBtn')?.addEventListener('click', () => {
@@ -1217,17 +1794,18 @@ function showWelcome() {
   chatEl.innerHTML = `
     <div class="welcome">
       <div class="welcome-avatar">🤖</div>
-      <div class="ai-welcome">
-        Hi${name}! I'm your English conversation partner.<br>
-        Let's start practicing — type a message or tap 🎤 to speak!
-      </div>
+      <div class="ai-welcome">${LANG_CONFIG[activeLang].welcome(name)}</div>
     </div>`;
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
+  activeSlot    = parseInt(localStorage.getItem('eai_active_slot') || '0');
+  activeLang    = localStorage.getItem(`eai_lang_${activeSlot}`) || 'en';
+  cachedReviews = JSON.parse(localStorage.getItem(`eai_reviews_${activeSlot}`) || '[]');
+
   initSupabase();
-  userId = getOrCreateUserId();
+  userId = getOrCreateUserIdForSlot(activeSlot);
 
   await dbInit();
 
@@ -1244,6 +1822,9 @@ async function init() {
     feedbackToggleBtn.setAttribute('aria-expanded', 'false');
     feedbackToggleBtn.textContent = '▸';
   }
+
+  updateHeaderProfile();
+  setActiveLang(activeLang);
 
   if (!getProfile()) history.replaceState(null, '', '#/profile');
 
