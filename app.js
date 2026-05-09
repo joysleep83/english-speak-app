@@ -1,13 +1,25 @@
 'use strict';
 
 // ── Constants ────────────────────────────────────────────────────────────────
-const API_URL        = '/api/proxy';
+const API_URL        = 'https://openrouter.ai/api/v1/chat/completions';
 const PRIMARY_MODEL  = 'meta-llama/llama-3.3-70b-instruct:free';
 const FALLBACK_MODEL = 'openai/gpt-oss-20b:free';
 const MAX_TURNS      = 10;
 
+const OPENROUTER_API_KEY = (typeof CONFIG !== 'undefined' && CONFIG.OPENROUTER_API_KEY)
+  || localStorage.getItem('or_api_key') || '';
+
 const SUPABASE_URL      = (typeof CONFIG !== 'undefined' && CONFIG.SUPABASE_URL)      || '';
 const SUPABASE_ANON_KEY = (typeof CONFIG !== 'undefined' && CONFIG.SUPABASE_ANON_KEY) || '';
+
+function apiHeaders() {
+  return {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+    'HTTP-Referer': window.location.origin,
+    'X-Title': 'EnglishAI Chat',
+  };
+}
 
 const SYSTEM_PROMPT =
   'You are a friendly English conversation partner. Respond naturally in English. ' +
@@ -58,6 +70,8 @@ let ttsEnabled    = true;
 let isTTSSpeaking = false;
 let isTTSPaused   = false;
 let lastAiBubble  = null;
+
+let showTranslation = true;
 
 let weeklyChartInst = null;
 let errorChartInst  = null;
@@ -224,6 +238,67 @@ async function clearChatMessages() {
   if (!supa) return;
   const { error } = await supa.from('chat_messages').delete().eq('user_id', userId);
   if (error) console.error('clearChatMessages', error);
+}
+
+// ── Profile card ──────────────────────────────────────────────────────────────
+function renderSavedProfileCard() {
+  const section = document.getElementById('savedProfileSection');
+  if (!section) return;
+  const p = getProfile();
+  if (!p) { section.innerHTML = ''; return; }
+
+  const goalMap  = { daily: '일상 회화', business: '비즈니스 영어', travel: '여행', exam: '시험 준비' };
+  const levelMap = { beginner: 'Beginner', intermediate: 'Intermediate', advanced: 'Advanced' };
+  const goalsHtml = (p.goals || [])
+    .map(g => `<span class="profile-tag">${goalMap[g] || g}</span>`).join('');
+
+  section.innerHTML = `
+    <div class="section-title" style="margin-top:0">저장된 프로필</div>
+    <div class="profile-saved-card">
+      <div class="profile-card-top">
+        <div class="profile-card-avatar">👤</div>
+        <div class="profile-card-info">
+          <div class="profile-card-name">${toHtml(p.name || 'Learner')}</div>
+          <span class="level-badge level-${p.level || 'intermediate'}">${levelMap[p.level || 'intermediate']}</span>
+        </div>
+        <div class="profile-card-btns">
+          <button class="btn-sm btn-outline" id="editProfileCardBtn">편집</button>
+          <button class="btn-sm btn-danger-sm" id="deleteProfileCardBtn">삭제</button>
+        </div>
+      </div>
+      <div class="profile-card-body">
+        <div class="profile-card-row">
+          <span class="profile-card-key">학습 목표</span>
+          <div class="profile-tags">${goalsHtml || '<span style="color:var(--muted);font-size:0.78rem">없음</span>'}</div>
+        </div>
+        <div class="profile-card-row">
+          <span class="profile-card-key">일일 목표</span>
+          <span class="profile-card-val">${p.dailyTarget || 10} turns/day</span>
+        </div>
+      </div>
+    </div>
+    <hr class="form-divider" style="margin: 24px 0 20px;">
+    <div class="section-title">프로필 편집</div>`;
+
+  document.getElementById('editProfileCardBtn').addEventListener('click', () => {
+    const nameEl = document.getElementById('profileName');
+    nameEl?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    nameEl?.focus();
+  });
+
+  document.getElementById('deleteProfileCardBtn').addEventListener('click', deleteProfileData);
+}
+
+async function deleteProfileData() {
+  if (!confirm('저장된 프로필을 삭제할까요?')) return;
+  cachedProfile = null;
+  if (supa) {
+    const { error } = await supa.from('profiles').delete().eq('user_id', userId);
+    if (error) console.error('deleteProfileData', error);
+  }
+  renderSavedProfileCard();
+  loadProfileForm();
+  updateGoalBar();
 }
 
 // ── Profile helpers ───────────────────────────────────────────────────────────
@@ -535,7 +610,7 @@ async function doFeedbackFetch(model, apiMsgs) {
   try {
     const res = await fetch(API_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: apiHeaders(),
       body: JSON.stringify({ model, messages: apiMsgs, stream: false, max_tokens: 500 }),
       signal: ctrl.signal,
     });
@@ -553,6 +628,35 @@ async function callFeedback(text) {
   catch (e) {
     if (e.status === 429 || e.status === 503 || e.status === 404) return doFeedbackFetch(FALLBACK_MODEL, msgs);
     throw e;
+  }
+}
+
+// ── Translation API ───────────────────────────────────────────────────────────
+async function doTextFetch(model, apiMsgs) {
+  const ctrl  = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 15000);
+  try {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: apiHeaders(),
+      body: JSON.stringify({ model, messages: apiMsgs, stream: false, max_tokens: 400 }),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) throw Object.assign(new Error(`${res.status}`), { status: res.status });
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content?.trim() || null;
+  } finally { clearTimeout(timer); }
+}
+
+async function callTranslation(text) {
+  const msgs = [
+    { role: 'system', content: 'Translate the following English text to Korean. Respond ONLY with the Korean translation. Do not add any explanations or extra text.' },
+    { role: 'user', content: text },
+  ];
+  try { return await doTextFetch(PRIMARY_MODEL, msgs); }
+  catch (e) {
+    if (e.status === 429 || e.status === 503 || e.status === 404) return doTextFetch(FALLBACK_MODEL, msgs);
+    return null;
   }
 }
 
@@ -611,7 +715,7 @@ function renderFeedback(data) {
 async function fetchStream(apiMessages, model) {
   const res = await fetch(API_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: apiHeaders(),
     body: JSON.stringify({ model, messages: apiMessages, stream: true, max_tokens: 300 }),
   });
   if (!res.ok) throw Object.assign(new Error(`API ${res.status}`), { status: res.status });
@@ -680,9 +784,22 @@ async function sendMessage(rawText) {
   const sessionId       = currentSession.sessionId;
   const prevTurns       = getDailyTurnCount();
 
+  let translationEl = null;
+
   try {
     const aiText = await callAI(apiMessages);
     const aiTs   = new Date().toISOString();
+
+    // Attach translation placeholder to the AI message element
+    const capturedBubble = lastAiBubble;
+    if (capturedBubble?.parentElement) {
+      translationEl = document.createElement('div');
+      translationEl.className = 'msg-translation';
+      if (!showTranslation) translationEl.classList.add('hidden');
+      translationEl.innerHTML = '<span class="translation-dots"><span></span><span></span><span></span></span>';
+      capturedBubble.parentElement.appendChild(translationEl);
+    }
+
     messages.push({ role: 'assistant', content: aiText, timestamp: aiTs });
     saveMessage({ role: 'assistant', content: aiText, timestamp: aiTs });
 
@@ -696,6 +813,17 @@ async function sendMessage(rawText) {
     updateGoalBar();
 
     if (ttsEnabled && ttsSupported && lastAiBubble) speak(aiText, lastAiBubble);
+
+    // Fire translation (non-blocking)
+    callTranslation(aiText).then(translated => {
+      if (!translationEl?.isConnected) return;
+      if (translated) {
+        translationEl.innerHTML = `<span class="translation-label">🇰🇷</span><span class="translation-text">${toHtml(translated)}</span>`;
+      } else {
+        translationEl.remove();
+        translationEl = null;
+      }
+    }).catch(() => { translationEl?.remove(); translationEl = null; });
   } catch (err) {
     hideLoading();
     let msg = '⚠️ 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.';
@@ -954,6 +1082,7 @@ async function confirmDelete(id) {
 
 // ── Profile form ──────────────────────────────────────────────────────────────
 function loadProfileForm() {
+  renderSavedProfileCard();
   const p = getProfile();
   document.getElementById('profileWelcome').classList.toggle('hidden', !!p);
   if (!p) return;
@@ -971,6 +1100,7 @@ function saveProfileForm() {
   const target  = parseInt(document.querySelector('input[name="target"]:checked')?.value || '10', 10);
   saveProfile({ name, level, goals, dailyTarget: target });
   updateGoalBar();
+  renderSavedProfileCard();
   if (isFirst) { location.hash = '#/chat'; }
   else {
     const el = document.createElement('div');
@@ -1064,6 +1194,17 @@ function setupEvents() {
     history.replaceState(null, '', '#/profile');
     router();
     alert('모든 데이터가 삭제되었습니다.');
+  });
+
+  document.getElementById('translationBtn')?.addEventListener('click', () => {
+    showTranslation = !showTranslation;
+    const btn = document.getElementById('translationBtn');
+    btn.classList.toggle('active', showTranslation);
+    btn.setAttribute('aria-pressed', String(showTranslation));
+    btn.textContent = showTranslation ? '🇰🇷 번역 ON' : '🇰🇷 번역 OFF';
+    document.querySelectorAll('.msg-translation').forEach(el => {
+      el.classList.toggle('hidden', !showTranslation);
+    });
   });
 
   window.addEventListener('hashchange', router);

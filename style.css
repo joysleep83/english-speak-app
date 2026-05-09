@@ -380,6 +380,49 @@ body {
   border-radius: 20px; vertical-align: middle; margin-left: 6px;
 }
 
+/* ── Saved Profile Card ──────────────────────────────────────────────── */
+.profile-saved-card {
+  border: 1.5px solid var(--border); border-radius: var(--radius-sm);
+  overflow: hidden; background: var(--surface); transition: box-shadow .2s;
+}
+.profile-saved-card:hover { box-shadow: 0 2px 12px rgba(88,101,242,.1); }
+
+.profile-card-top {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px; background: var(--bg);
+}
+
+.profile-card-avatar {
+  width: 40px; height: 40px; background: var(--primary);
+  border-radius: 50%; display: flex; align-items: center;
+  justify-content: center; font-size: 1.2rem; flex-shrink: 0;
+}
+
+.profile-card-info { flex: 1; min-width: 0; }
+.profile-card-name { font-size: 0.95rem; font-weight: 700; color: var(--ai-text); margin-bottom: 4px; }
+
+.level-badge {
+  display: inline-block; font-size: 0.68rem; font-weight: 700;
+  padding: 2px 8px; border-radius: 20px; text-transform: uppercase; letter-spacing: .04em;
+}
+.level-beginner     { background: #dcfce7; color: #16a34a; }
+.level-intermediate { background: #dbeafe; color: #2563eb; }
+.level-advanced     { background: #ede9fe; color: #7c3aed; }
+
+.profile-card-btns { display: flex; gap: 6px; flex-shrink: 0; }
+
+.profile-card-body { padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; }
+
+.profile-card-row { display: flex; align-items: center; gap: 10px; font-size: 0.82rem; }
+.profile-card-key { color: var(--muted); font-weight: 500; min-width: 68px; flex-shrink: 0; }
+.profile-card-val { color: var(--ai-text); font-weight: 500; }
+
+.profile-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+.profile-tag {
+  background: #eff1ff; color: var(--primary); border: 1px solid #c7cdf9;
+  border-radius: 20px; font-size: 0.73rem; font-weight: 500; padding: 2px 9px;
+}
+
 /* ── Profile form ────────────────────────────────────────────────────── */
 .profile-welcome {
   background: #eff6ff; border: 1px solid #bfdbfe;
@@ -490,6 +533,11 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg); border-bottom-left-radius: 4px;
 }
+/* When translation is attached, flatten the bottom corners of the bubble */
+.msg.ai:has(.msg-translation:not(.hidden)) .bubble {
+  border-bottom-left-radius: 0; border-bottom-right-radius: 0;
+  border-bottom-color: transparent;
+}
 
 .bubble.streaming::after {
   content: '▋'; display: inline-block;
@@ -500,6 +548,30 @@ body {
 
 /* TTS word highlight */
 .tts-word.active { background: #fef08a; border-radius: 2px; }
+
+/* ── Korean Translation ──────────────────────────────────────────────── */
+.msg-translation {
+  display: flex; align-items: flex-start; gap: 6px;
+  margin-top: 5px; padding: 7px 12px;
+  background: #f5f7ff; border: 1px solid #dde2fb;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  font-size: 0.84rem; color: #3b4a9c; line-height: 1.55;
+  word-break: break-word; animation: slideIn .2s ease;
+}
+.translation-label {
+  flex-shrink: 0; font-size: 1rem; line-height: 1.4;
+}
+.translation-text { flex: 1; }
+.translation-dots {
+  display: flex; gap: 4px; align-items: center; padding: 2px 0;
+}
+.translation-dots span {
+  display: inline-block; width: 5px; height: 5px;
+  background: #8a93a6; border-radius: 50%;
+  animation: bounce 1.3s infinite ease-in-out;
+}
+.translation-dots span:nth-child(2) { animation-delay: .18s; }
+.translation-dots span:nth-child(3) { animation-delay: .36s; }
 
 /* ── Loading ─────────────────────────────────────────────────────────── */
 .dots { display: flex; gap: 5px; align-items: center; padding: 13px 16px !important; }
