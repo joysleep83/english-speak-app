@@ -1,0 +1,17 @@
+# Environment variables and secrets - NEVER commit these
+.env
+.env.local
+.env.*.local
+config.js
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+.next/
+
+# OS
+.DS_Store
+Thumbs.db
