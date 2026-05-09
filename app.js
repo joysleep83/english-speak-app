@@ -253,15 +253,20 @@ function updateSlotDisplay(slot, profile) {
 
 // ── DB init ───────────────────────────────────────────────────────────────────
 async function dbInit() {
-  if (!supa) return;
+  if (!supa) {
+    // Offline fallback: load reviews from localStorage
+    try { cachedReviews = JSON.parse(localStorage.getItem(`eai_reviews_${activeSlot}`) || '[]'); } catch { cachedReviews = []; }
+    return;
+  }
 
-  const [pRes, sRes, fRes, bRes, stRes, mRes] = await Promise.allSettled([
+  const [pRes, sRes, fRes, bRes, stRes, mRes, rRes] = await Promise.allSettled([
     supa.from('profiles').select('*').eq('user_id', userId).maybeSingle(),
     supa.from('sessions').select('*').eq('user_id', userId),
     supa.from('feedbacks').select('*').eq('user_id', userId),
     supa.from('badges').select('*').eq('user_id', userId),
     supa.from('streaks').select('*').eq('user_id', userId).maybeSingle(),
     supa.from('chat_messages').select('*').eq('user_id', userId).order('timestamp', { ascending: true }),
+    supa.from('reviews').select('*').eq('user_id', userId).order('added_at', { ascending: false }),
   ]);
 
   if (pRes.status === 'fulfilled' && pRes.value.data) {
@@ -291,6 +296,35 @@ async function dbInit() {
 
   if (mRes.status === 'fulfilled' && mRes.value.data) {
     messages = mRes.value.data.map(r => ({ role: r.role, content: r.content, timestamp: r.timestamp }));
+  }
+
+  if (rRes.status === 'fulfilled' && rRes.value.data) {
+    cachedReviews = rRes.value.data.map(r => ({
+      id: r.review_id, type: r.type, original: r.original,
+      corrected: r.corrected, explanation: r.explanation,
+      learned: r.learned, addedAt: r.added_at,
+    }));
+    // Migrate any localStorage reviews to Supabase (one-time migration)
+    const legacyKey = `eai_reviews_${activeSlot}`;
+    const legacyRaw = localStorage.getItem(legacyKey);
+    if (legacyRaw && cachedReviews.length === 0) {
+      try {
+        const legacy = JSON.parse(legacyRaw);
+        if (legacy.length > 0) {
+          const rows = legacy.map(r => ({
+            user_id: userId, review_id: r.id || genId(), type: r.type,
+            original: r.original, corrected: r.corrected,
+            explanation: r.explanation, learned: r.learned || false,
+            added_at: r.addedAt || new Date().toISOString(),
+          }));
+          await supa.from('reviews').upsert(rows, { onConflict: 'user_id,review_id' });
+          cachedReviews = legacy;
+          localStorage.removeItem(legacyKey);
+        }
+      } catch (e) { console.error('review migration', e); }
+    } else if (legacyRaw) {
+      localStorage.removeItem(legacyKey); // already in Supabase, clean up
+    }
   }
 }
 
@@ -343,28 +377,48 @@ function appendFeedbackLog(items) {
   }))).then(({ error }) => { if (error) console.error('appendFeedbackLog', error); });
 }
 
-// ── Review notes (localStorage, per slot) ────────────────────────────────────
+// ── Review notes (Supabase, per user_id) ─────────────────────────────────────
 let cachedReviews = [];
 
 function getReviews() { return cachedReviews; }
 
-function saveReviews() { try { localStorage.setItem(`eai_reviews_${activeSlot}`, JSON.stringify(cachedReviews)); } catch {} }
 
 function addReview(item) {
   if (cachedReviews.some(r => r.original === item.original && r.corrected === item.corrected)) return false;
-  cachedReviews = [{ id: genId(), ...item, addedAt: new Date().toISOString(), learned: false }, ...cachedReviews];
-  saveReviews();
+  const newItem = { id: genId(), ...item, addedAt: new Date().toISOString(), learned: false };
+  cachedReviews = [newItem, ...cachedReviews];
+  if (supa) {
+    supa.from('reviews').insert({
+      user_id: userId, review_id: newItem.id, type: newItem.type,
+      original: newItem.original, corrected: newItem.corrected,
+      explanation: newItem.explanation, learned: false,
+      added_at: newItem.addedAt,
+    }).then(({ error }) => { if (error) console.error('addReview', error); });
+  } else {
+    try { localStorage.setItem(`eai_reviews_${activeSlot}`, JSON.stringify(cachedReviews)); } catch {}
+  }
   return true;
 }
 
 function removeReview(id) {
   cachedReviews = cachedReviews.filter(r => r.id !== id);
-  saveReviews();
+  if (supa) {
+    supa.from('reviews').delete().eq('review_id', id).eq('user_id', userId)
+      .then(({ error }) => { if (error) console.error('removeReview', error); });
+  } else {
+    try { localStorage.setItem(`eai_reviews_${activeSlot}`, JSON.stringify(cachedReviews)); } catch {}
+  }
 }
 
 function toggleReviewLearned(id) {
   cachedReviews = cachedReviews.map(r => r.id === id ? { ...r, learned: !r.learned } : r);
-  saveReviews();
+  const item = cachedReviews.find(r => r.id === id);
+  if (supa && item) {
+    supa.from('reviews').update({ learned: item.learned }).eq('review_id', id).eq('user_id', userId)
+      .then(({ error }) => { if (error) console.error('toggleReviewLearned', error); });
+  } else {
+    try { localStorage.setItem(`eai_reviews_${activeSlot}`, JSON.stringify(cachedReviews)); } catch {}
+  }
 }
 
 // ── Badges DB ─────────────────────────────────────────────────────────────────
@@ -471,7 +525,7 @@ async function switchProfileSlot(slot) {
   cachedStreak    = { lastStudyDate: null, currentStreak: 0 };
   messages        = [];
   currentSession  = null;
-  cachedReviews   = JSON.parse(localStorage.getItem(`eai_reviews_${slot}`) || '[]');
+  cachedReviews   = [];
   activeLang      = localStorage.getItem(`eai_lang_${slot}`) || 'en';
 
   await dbInit();
@@ -1752,6 +1806,7 @@ function setupEvents() {
         supa.from('badges').delete().eq('user_id', userId),
         supa.from('streaks').delete().eq('user_id', userId),
         supa.from('chat_messages').delete().eq('user_id', userId),
+        supa.from('reviews').delete().eq('user_id', userId),
       ]);
     }
     // Clear all slot-specific localStorage keys for current slot
@@ -1800,9 +1855,8 @@ function showWelcome() {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
-  activeSlot    = parseInt(localStorage.getItem('eai_active_slot') || '0');
-  activeLang    = localStorage.getItem(`eai_lang_${activeSlot}`) || 'en';
-  cachedReviews = JSON.parse(localStorage.getItem(`eai_reviews_${activeSlot}`) || '[]');
+  activeSlot = parseInt(localStorage.getItem('eai_active_slot') || '0');
+  activeLang = localStorage.getItem(`eai_lang_${activeSlot}`) || 'en';
 
   initSupabase();
   userId = getOrCreateUserIdForSlot(activeSlot);
