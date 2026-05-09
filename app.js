@@ -1,7 +1,6 @@
 'use strict';
 
 // ── Constants ────────────────────────────────────────────────────────────────
-const API_URL        = 'https://openrouter.ai/api/v1/chat/completions';
 const PRIMARY_MODEL  = 'meta-llama/llama-3.3-70b-instruct:free';
 const FALLBACK_MODEL = 'openai/gpt-oss-20b:free';
 const MAX_TURNS      = 10;
@@ -9,18 +8,22 @@ const MAX_TURNS      = 10;
 const SUPABASE_URL      = (typeof CONFIG !== 'undefined' && CONFIG.SUPABASE_URL)      || '';
 const SUPABASE_ANON_KEY = (typeof CONFIG !== 'undefined' && CONFIG.SUPABASE_ANON_KEY) || '';
 
-function getApiKey() {
-  return (typeof CONFIG !== 'undefined' && CONFIG.OPENROUTER_API_KEY)
-    || localStorage.getItem('or_api_key') || '';
-}
+// config.js가 있으면 직접 호출(로컬 개발), 없으면 Vercel Edge Function 프록시 사용
+const LOCAL_API_KEY = (typeof CONFIG !== 'undefined' && CONFIG.OPENROUTER_API_KEY)
+  || localStorage.getItem('or_api_key') || '';
+const USE_PROXY = !LOCAL_API_KEY;
+const API_URL   = USE_PROXY
+  ? '/api/proxy'
+  : 'https://openrouter.ai/api/v1/chat/completions';
 
 function apiHeaders() {
-  return {
+  const headers = {
     'Content-Type': 'application/json',
-    'Authorization': `Bearer ${getApiKey()}`,
     'HTTP-Referer': window.location.origin,
     'X-Title': 'EnglishAI Chat',
   };
+  if (!USE_PROXY) headers['Authorization'] = `Bearer ${LOCAL_API_KEY}`;
+  return headers;
 }
 
 const LANG_CONFIG = {
@@ -1218,7 +1221,7 @@ async function sendMessage(rawText) {
     hideLoading();
     let msg = '⚠️ 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.';
     if (err.status === 429) msg = '⚠️ AI 응답 한도 초과입니다. 잠시 후 다시 시도해 주세요.';
-    if (err.status === 401) msg = '⚠️ API 키가 올바르지 않습니다.';
+    if (err.status === 401) msg = USE_PROXY ? '⚠️ 서버 설정 오류입니다. Vercel 환경변수를 확인해 주세요.' : '⚠️ API 키가 올바르지 않습니다.';
     showError(msg);
   } finally {
     isProcessing = false;
