@@ -750,6 +750,16 @@ body {
   padding: 9px 13px; font-size: .84rem; animation: msgIn .2s ease;
 }
 
+.privacy-warning {
+  align-self: stretch; display: flex; gap: 10px; align-items: flex-start;
+  background: #fffbeb; color: #92400e;
+  border: 1px solid #fcd34d; border-radius: var(--radius-sm);
+  padding: 10px 13px; font-size: .84rem; animation: msgIn .2s ease;
+}
+.privacy-warning-icon { font-size: 1.1rem; flex-shrink: 0; margin-top: 1px; }
+.privacy-warning-body strong { display: block; margin-bottom: 3px; font-size: .85rem; }
+.privacy-warning-body p { margin: 0; line-height: 1.5; color: #78350f; font-size: .81rem; }
+
 /* ── Footer ──────────────────────────────────────────────────────────── */
 .footer { border-top: 1px solid var(--border); background: var(--surface); flex-shrink: 0; }
 

@@ -1147,10 +1147,49 @@ async function callAI(apiMessages) {
   }
 }
 
+// ── PII detection ────────────────────────────────────────────────────────────
+const PII_PATTERNS = [
+  { label: '이메일 주소',      pattern: /\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b/ },
+  { label: '전화번호',         pattern: /\b(?:010|011|016|017|018|019)[-.\s]?\d{3,4}[-.\s]?\d{4}\b/ },
+  { label: '국제 전화번호',    pattern: /(?<!\d)\+\d{1,3}[-\s]?\(?\d{1,4}\)?[-\s]?\d{3,4}[-\s]?\d{3,4}\b/ },
+  { label: '주민등록번호',     pattern: /\b\d{6}-[1-4]\d{6}\b/ },
+  { label: '신용·체크카드 번호', pattern: /\b\d{4}[-\s]\d{4}[-\s]\d{4}[-\s]\d{4}\b/ },
+];
+
+function detectPII(text) {
+  return PII_PATTERNS
+    .filter(({ pattern }) => { pattern.lastIndex = 0; return pattern.test(text); })
+    .map(({ label }) => label);
+}
+
+function showPrivacyWarning(piiLabels) {
+  const existing = chatEl.querySelector('.privacy-warning');
+  if (existing) existing.remove();
+
+  const el = document.createElement('div');
+  el.className = 'privacy-warning';
+  el.innerHTML =
+    `<span class="privacy-warning-icon">🔒</span>` +
+    `<div class="privacy-warning-body">` +
+      `<strong>개인정보 감지 — 전송 차단됨</strong>` +
+      `<p>${piiLabels.join(', ')}이(가) 포함되어 있습니다.<br>` +
+      `무료 AI 모델은 입력 데이터를 학습에 활용할 수 있으므로 개인정보 입력을 삼가 주세요.</p>` +
+    `</div>`;
+  chatEl.appendChild(el);
+  scrollBottom();
+  setTimeout(() => el.remove(), 8000);
+}
+
 // ── Send message ──────────────────────────────────────────────────────────────
 async function sendMessage(rawText) {
   const text = rawText.trim();
   if (!text || isProcessing) return;
+
+  const piiFound = detectPII(text);
+  if (piiFound.length > 0) {
+    showPrivacyWarning(piiFound);
+    return; // 입력값은 그대로 유지
+  }
 
   isProcessing = true;
   sendBtn.disabled = true;
