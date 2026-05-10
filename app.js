@@ -1,8 +1,13 @@
 'use strict';
 
 // ── Constants ────────────────────────────────────────────────────────────────
-const PRIMARY_MODEL  = 'meta-llama/llama-3.3-70b-instruct:free';
-const FALLBACK_MODEL = 'openai/gpt-oss-20b:free';
+const PRIMARY_MODEL        = 'meta-llama/llama-3.3-70b-instruct:free';
+const FALLBACK_MODEL       = 'openai/gpt-oss-20b:free';
+const EXTRA_FALLBACK_MODEL = 'meta-llama/llama-4-scout:free';
+const NEMOTRON_MODEL       = 'nvidia/nemotron-3-super-120b-a12b:free'; // suggestions & translation
+const GEMMA_MODEL          = 'google/gemma-4-31b-it:free';             // feedback
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 const MAX_TURNS      = 10;
 
 const SUPABASE_URL      = (typeof CONFIG !== 'undefined' && CONFIG.SUPABASE_URL)      || '';
@@ -56,8 +61,8 @@ const LANG_CONFIG = {
       'Respond ONLY in this exact JSON (no markdown, no extra text):\n' +
       '{"hasIssues":true,"corrections":[{"original":"...","corrected":"...","explanation":"...","type":"grammar"}],"overallFeedback":"..."}\n' +
       'type must be: grammar, expression, or vocabulary.\n' +
-      'Write "explanation" and "overallFeedback" fields in Korean.\n' +
-      'If correct: {"hasIssues":false,"corrections":[],"overallFeedback":"すばらしい！자연스러운 일본어입니다."}',
+      'IMPORTANT: You MUST write ALL "explanation" and "overallFeedback" values in Korean (한국어). Never use Japanese in these fields.\n' +
+      'If correct: {"hasIssues":false,"corrections":[],"overallFeedback":"훌륭해요! 자연스러운 일본어입니다."}',
   },
 };
 
@@ -199,9 +204,10 @@ let isTTSPaused   = false;
 let lastAiBubble  = null;
 let ttsKeepAlive  = null;
 
-let showTranslation  = true;
-let hideAiText       = false;
-let feedbackGenCount = 0;
+let showTranslation   = true;
+let hideAiText        = false;
+let feedbackGenCount  = 0;
+let suggestionsEnabled = true;
 
 let weeklyChartInst = null;
 let errorChartInst  = null;
@@ -613,15 +619,79 @@ async function deleteProfileData() {
 }
 
 // ── Profile helpers ───────────────────────────────────────────────────────────
+const LEVEL_INSTRUCTIONS = {
+  en: {
+    beginner: `
+LEARNER LEVEL: BEGINNER (A1-A2). You MUST follow these rules for every single response — no exceptions:
+- Vocabulary: use only the most common 500-1000 words. Never use idioms, phrasal verbs, or advanced vocabulary.
+- Sentence length: max 8 words per sentence. Short and simple always.
+- Grammar: stick to present simple and past simple only. No conditionals, no passive voice.
+- Response length: 1-2 sentences maximum.
+- Questions: ask only one simple question. Use "Do you like...?", "What is your...?", "Did you...?" patterns.
+- If the learner makes a clear grammar mistake, add one gentle correction in parentheses: (Tip: say "I went" not "I go").
+- Tone: extremely warm, patient, encouraging. Celebrate every message.`,
+    intermediate: `
+LEARNER LEVEL: INTERMEDIATE (B1-B2). Follow these rules for every response:
+- Vocabulary: use natural everyday English. Introduce 1 useful new word or phrase per response and use it naturally in context.
+- Sentence length: 1-2 sentences of moderate complexity (up to 15 words each).
+- Grammar: use a natural mix of tenses including present perfect and conditionals where appropriate.
+- Response length: 2-3 sentences.
+- Questions: ask one meaningful open-ended question that encourages the learner to speak more.
+- Occasionally introduce a natural expression: "By the way, we often say '...' in this situation."
+- Tone: friendly, natural, gently challenging.`,
+    advanced: `
+LEARNER LEVEL: ADVANCED (C1-C2). Follow these rules for every response:
+- Vocabulary: use rich, sophisticated vocabulary. Include idioms, phrasal verbs, collocations, and nuanced expressions freely.
+- Sentence length and structure: use complex, varied sentence structures. Mix clause types naturally.
+- Grammar: use any tense or mood appropriate to the context, including subjunctive, mixed conditionals, inversion.
+- Response length: 3-4 substantive sentences.
+- Questions: challenge the learner with thought-provoking questions requiring detailed, nuanced answers.
+- Treat the learner as near-native: no simplification, no hand-holding.
+- Occasionally reference culture, humor, sarcasm, or subtle nuance to push toward true fluency.`,
+  },
+  ja: {
+    beginner: `
+学習者のレベル: 初級 (N5-N4相当)。全ての返答で以下のルールを厳守してください:
+- 語彙: ひらがな・カタカナと最基本漢字のみ使用。難しい漢字には必ずふりがなを付ける。
+- 文の長さ: 1文は最大8語以内。短く簡単に。
+- 文法: です・ます体のみ。〜て形、〜ない形の基本のみ。
+- 返答の長さ: 1-2文のみ。
+- 質問: 「〜が好きですか？」「〜は何ですか？」など単純な質問1つだけ。
+- 誤りがあれば丁寧に括弧内で訂正: (「〜ました」と言いましょう)
+- トーン: 非常に温かく、辛抱強く、励ます。`,
+    intermediate: `
+学習者のレベル: 中級 (N3-N2相当)。全ての返答で以下のルールに従ってください:
+- 語彙: 日常的な語彙を使い、1返答につき1つの新しい表現を自然に導入する。
+- 文の長さ: 適度な複雑さの文を1-2文。
+- 文法: て形、たら・ば条件形、〜んです、〜てしまうなど中級文法を自然に使う。
+- 返答の長さ: 2-3文。
+- 質問: 学習者が多く話せるよう、意味のある質問を1つ。
+- トーン: 自然で親しみやすく、適度にチャレンジング。`,
+    advanced: `
+学習者のレベル: 上級 (N1相当)。全ての返答で以下のルールに従ってください:
+- 語彙: 豊かで洗練された語彙。慣用句、敬語、ビジネス表現を自由に使う。
+- 文の長さと構造: 複雑で多様な文構造。
+- 文法: あらゆる文法形式、敬語体系を文脈に応じて使用。
+- 返答の長さ: 3-4文の充実した内容。
+- 質問: 詳細で微妙な回答を必要とする深い質問。
+- 簡略化や手取り足取りの説明は不要。ネイティブに近い扱い。`,
+  },
+};
+
 function buildSystemPrompt() {
-  const base = activeRoleplay
+  const p     = getProfile();
+  const level = p?.level || 'intermediate';
+  const base  = activeRoleplay
     ? activeRoleplay.prompt + ' Continue the roleplay naturally after each user message.'
     : LANG_CONFIG[activeLang].systemPrompt;
-  const p = getProfile();
-  if (!p) return base;
+
+  const levelInstruction = (LEVEL_INSTRUCTIONS[activeLang] || LEVEL_INSTRUCTIONS.en)[level] || '';
+
+  if (!p) return base + levelInstruction;
+
   const goalMap = { daily: 'daily conversation', business: 'business English', travel: 'travel English', exam: 'exam preparation' };
   const goals   = (p.goals || []).map(g => goalMap[g] || g).join(', ') || 'general';
-  return base + ` User profile: Level=${p.level || 'intermediate'}, Goals=${goals}. Adjust vocabulary and complexity accordingly.`;
+  return base + levelInstruction + `\nLearner's goals: ${goals}.`;
 }
 
 // ── Session lifecycle ─────────────────────────────────────────────────────────
@@ -972,12 +1042,12 @@ function parseJSONFromText(text) {
 
 async function doFeedbackFetch(model, apiMsgs) {
   const ctrl  = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 15000);
+  const timer = setTimeout(() => ctrl.abort(), 20000);
   try {
     const res = await fetch(API_URL, {
       method: 'POST',
       headers: apiHeaders(),
-      body: JSON.stringify({ model, messages: apiMsgs, stream: false, max_tokens: 500 }),
+      body: JSON.stringify({ model, messages: apiMsgs, stream: false, max_tokens: 350 }),
       signal: ctrl.signal,
     });
     if (!res.ok) throw Object.assign(new Error(`${res.status}`), { status: res.status });
@@ -988,24 +1058,45 @@ async function doFeedbackFetch(model, apiMsgs) {
   } finally { clearTimeout(timer); }
 }
 
+function buildFeedbackPrompt() {
+  const base  = LANG_CONFIG[activeLang].feedbackPrompt;
+  const level = getProfile()?.level || 'intermediate';
+  const levelNote = {
+    beginner:     'IMPORTANT: The learner is a BEGINNER. Only flag 1-2 major errors maximum. Ignore minor stylistic issues. Keep all explanations extremely simple and encouraging. The overallFeedback must be very warm and motivating.',
+    intermediate: 'The learner is INTERMEDIATE. Flag clear grammar errors and unnatural expressions. Explanations can be moderately detailed.',
+    advanced:     'The learner is ADVANCED. Be thorough — point out subtle unnatural phrasing, word choice issues, register mismatches, and stylistic improvements even if the sentence is technically correct. Treat them as a near-native learner.',
+  };
+  const koreanReminder = activeLang === 'ja'
+    ? '\nReminder: ALL explanation and overallFeedback text MUST be written in Korean (한국어). Do not use Japanese in those fields.'
+    : '';
+  return base + '\n\n' + (levelNote[level] || levelNote.intermediate) + koreanReminder;
+}
+
 async function callFeedback(text) {
-  const msgs = [{ role: 'system', content: LANG_CONFIG[activeLang].feedbackPrompt }, { role: 'user', content: text }];
-  try { return await doFeedbackFetch(PRIMARY_MODEL, msgs); }
+  const msgs = [{ role: 'system', content: buildFeedbackPrompt() }, { role: 'user', content: text }];
+  const rateLimited = e => e.status === 429 || e.status === 503 || e.status === 404;
+  try { return await doFeedbackFetch(GEMMA_MODEL, msgs); }
   catch (e) {
-    if (e.status === 429 || e.status === 503 || e.status === 404) return doFeedbackFetch(FALLBACK_MODEL, msgs);
-    throw e;
+    if (!rateLimited(e)) throw e;
+    await sleep(1500);
+    try { return await doFeedbackFetch(GEMMA_MODEL, msgs); }
+    catch (e2) {
+      if (!rateLimited(e2)) throw e2;
+      await sleep(1000);
+      return doFeedbackFetch(FALLBACK_MODEL, msgs);
+    }
   }
 }
 
 // ── Translation API ───────────────────────────────────────────────────────────
-async function doTextFetch(model, apiMsgs) {
+async function doTextFetch(model, apiMsgs, maxTokens = 300) {
   const ctrl  = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 15000);
+  const timer = setTimeout(() => ctrl.abort(), 20000);
   try {
     const res = await fetch(API_URL, {
       method: 'POST',
       headers: apiHeaders(),
-      body: JSON.stringify({ model, messages: apiMsgs, stream: false, max_tokens: 400 }),
+      body: JSON.stringify({ model, messages: apiMsgs, stream: false, max_tokens: maxTokens }),
       signal: ctrl.signal,
     });
     if (!res.ok) throw Object.assign(new Error(`${res.status}`), { status: res.status });
@@ -1014,17 +1105,140 @@ async function doTextFetch(model, apiMsgs) {
   } finally { clearTimeout(timer); }
 }
 
+function cleanTranslation(raw) {
+  if (!raw) return null;
+  let t = raw.trim();
+  // strip markdown code blocks
+  t = t.replace(/```[\s\S]*?```/g, '').trim();
+  // strip common prefixes models add despite instructions
+  t = t.replace(/^(Korean\s*(translation|번역)\s*[:：]?\s*)/i, '');
+  t = t.replace(/^(번역\s*[:：]?\s*)/i, '');
+  t = t.replace(/^["「『]|["」』]$/g, '').trim();
+  // if result is empty or still looks like English, discard
+  if (!t || /^[a-zA-Z\s.,!?'"()-]{10,}$/.test(t)) return null;
+  return t;
+}
+
 async function callTranslation(text) {
   const srcLang = activeLang === 'ja' ? 'Japanese' : 'English';
+  const systemMsg =
+    `You are a professional translator. Translate the user's ${srcLang} message into natural Korean.\n` +
+    `Rules:\n` +
+    `- Output ONLY the Korean translation. Nothing else.\n` +
+    `- Do NOT include the original text.\n` +
+    `- Do NOT add labels like "Translation:" or "번역:".\n` +
+    `- Do NOT add explanations or notes.`;
   const msgs = [
-    { role: 'system', content: `Translate the following ${srcLang} text to Korean. Respond ONLY with the Korean translation. Do not add any explanations or extra text.` },
+    { role: 'system', content: systemMsg },
     { role: 'user', content: text },
   ];
-  try { return await doTextFetch(PRIMARY_MODEL, msgs); }
+  const rateLimited = e => e.status === 429 || e.status === 503 || e.status === 404;
+  const tryFetch = async (model) => cleanTranslation(await doTextFetch(model, msgs, 250));
+
+  try { return await tryFetch(PRIMARY_MODEL); }
   catch (e) {
-    if (e.status === 429 || e.status === 503 || e.status === 404) return doTextFetch(FALLBACK_MODEL, msgs);
-    return null;
+    if (!rateLimited(e)) return null;
+    await sleep(1500);
+    try { return await tryFetch(PRIMARY_MODEL); }
+    catch (e2) {
+      if (!rateLimited(e2)) return null;
+      return tryFetch(FALLBACK_MODEL).catch(() => null);
+    }
   }
+}
+
+// ── Suggestions ───────────────────────────────────────────────────────────────
+function parseSuggestions(raw) {
+  if (!raw) return [];
+  // 1) try strict JSON array
+  const arrMatch = raw.match(/\[[\s\S]*?\]/);
+  if (arrMatch) {
+    try {
+      const arr = JSON.parse(arrMatch[0]);
+      if (Array.isArray(arr) && arr.length) return arr.slice(0, 3).map(s => String(s).trim()).filter(Boolean);
+    } catch {}
+  }
+  // 2) fallback: extract quoted strings
+  const quoted = [...raw.matchAll(/"([^"]{3,80})"/g)].map(m => m[1].trim()).filter(Boolean);
+  if (quoted.length >= 2) return quoted.slice(0, 3);
+  // 3) fallback: numbered / bulleted lines
+  const lines = raw.split('\n')
+    .map(l => l.replace(/^[\s\d.)\-*•]+/, '').replace(/^["']|["']$/g, '').trim())
+    .filter(l => l.length > 3 && l.length < 100);
+  return lines.slice(0, 3);
+}
+
+async function callSuggestions(conversationContext) {
+  const lang = activeLang === 'ja' ? 'Japanese' : 'English';
+  const level = getProfile()?.level || 'intermediate';
+  const prompt =
+    `You are a language learning assistant. Look at the conversation and output exactly 3 short ${lang} sentences the ${level}-level learner could say next.\n` +
+    `STRICT RULES:\n` +
+    `- Each sentence must be under 12 words\n` +
+    `- Output ONLY a valid JSON array. No other text, no markdown, no numbering.\n` +
+    `- Format: ["sentence one","sentence two","sentence three"]`;
+  const msgs = [
+    { role: 'system', content: prompt },
+    ...conversationContext.slice(-4),
+    { role: 'user', content: 'Give me 3 response suggestions as a JSON array.' },
+  ];
+  const rateLimited = e => e.status === 429 || e.status === 503 || e.status === 404;
+  const tryFetch = model => doTextFetch(model, msgs, 200);
+
+  try { return await tryFetch(PRIMARY_MODEL); }
+  catch (e) {
+    if (!rateLimited(e)) return null;
+    await sleep(1500);
+    try { return await tryFetch(PRIMARY_MODEL); }
+    catch (e2) {
+      if (!rateLimited(e2)) return null;
+      return tryFetch(FALLBACK_MODEL).catch(() => null);
+    }
+  }
+}
+
+function showSuggestionsLoading() {
+  const bar = document.getElementById('suggestionBar');
+  if (!bar || !suggestionsEnabled) return;
+  bar.innerHTML = '<span class="suggestion-label">💡</span><div class="suggestion-loading"><span></span><span></span><span></span></div>';
+  bar.classList.remove('hidden');
+}
+
+function renderSuggestions(suggestions) {
+  const bar = document.getElementById('suggestionBar');
+  if (!bar) return;
+  if (!suggestionsEnabled || !suggestions?.length) { bar.classList.add('hidden'); return; }
+  bar.innerHTML = '<span class="suggestion-label">💡 추천:</span>';
+  suggestions.forEach(text => {
+    const chip = document.createElement('button');
+    chip.className = 'suggestion-chip';
+    chip.title = text;
+    chip.textContent = text;
+    chip.addEventListener('click', () => {
+      inputEl.value = text;
+      inputEl.dispatchEvent(new Event('input'));
+      inputEl.focus();
+      bar.classList.add('hidden');
+    });
+    bar.appendChild(chip);
+  });
+  bar.classList.remove('hidden');
+}
+
+function hideSuggestions() {
+  const bar = document.getElementById('suggestionBar');
+  if (bar) bar.classList.add('hidden');
+}
+
+function setSuggestionsEnabled(on) {
+  suggestionsEnabled = on;
+  const btn = document.getElementById('suggestBtn');
+  if (btn) {
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-pressed', String(on));
+    btn.textContent = on ? '💡 추천 ON' : '💡 추천 OFF';
+  }
+  if (!on) hideSuggestions();
 }
 
 // ── Feedback UI ───────────────────────────────────────────────────────────────
@@ -1089,11 +1303,17 @@ function renderFeedback(data) {
 
 // ── Streaming fetch ───────────────────────────────────────────────────────────
 async function fetchStream(apiMessages, model) {
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    headers: apiHeaders(),
-    body: JSON.stringify({ model, messages: apiMessages, stream: true, max_tokens: 300 }),
-  });
+  const ctrl  = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 30000);
+  let res;
+  try {
+    res = await fetch(API_URL, {
+      method: 'POST',
+      headers: apiHeaders(),
+      body: JSON.stringify({ model, messages: apiMessages, stream: true, max_tokens: 300 }),
+      signal: ctrl.signal,
+    });
+  } finally { clearTimeout(timer); }
   if (!res.ok) throw Object.assign(new Error(`API ${res.status}`), { status: res.status });
 
   hideLoading();
@@ -1140,10 +1360,28 @@ async function fetchStream(apiMessages, model) {
 }
 
 async function callAI(apiMessages) {
-  try { return await fetchStream(apiMessages, PRIMARY_MODEL); }
-  catch (err) {
-    if (err.status === 429 || err.status === 503 || err.status === 404) { showLoading(); return fetchStream(apiMessages, FALLBACK_MODEL); }
-    throw err;
+  const rateLimited = e => e.status === 429 || e.status === 503 || e.status === 404;
+  try {
+    return await fetchStream(apiMessages, PRIMARY_MODEL);
+  } catch (e1) {
+    if (!rateLimited(e1)) throw e1;
+    // 1.5s backoff then retry primary
+    await sleep(1500); showLoading();
+    try {
+      return await fetchStream(apiMessages, PRIMARY_MODEL);
+    } catch (e2) {
+      if (!rateLimited(e2)) throw e2;
+      // try first fallback
+      await sleep(1000); showLoading();
+      try {
+        return await fetchStream(apiMessages, FALLBACK_MODEL);
+      } catch (e3) {
+        if (!rateLimited(e3)) throw e3;
+        // last resort
+        await sleep(1000); showLoading();
+        return fetchStream(apiMessages, EXTRA_FALLBACK_MODEL);
+      }
+    }
   }
 }
 
@@ -1195,6 +1433,7 @@ async function sendMessage(rawText) {
   sendBtn.disabled = true;
   inputEl.value = '';
   inputEl.style.height = 'auto';
+  hideSuggestions();
 
   if (!currentSession) startSession();
 
@@ -1204,17 +1443,17 @@ async function sendMessage(rawText) {
   saveMessage({ role: 'user', content: text, timestamp: ts });
   scrollBottom();
 
-  const context = messages.slice(-(MAX_TURNS * 2)).map(m => ({ role: m.role, content: m.content }));
+  // Send only the last 12 messages (6 turns) to reduce token load
+  const context = messages.slice(-12).map(m => ({ role: m.role, content: m.content }));
   const apiMessages = [{ role: 'system', content: buildSystemPrompt() }, ...context];
 
   showLoading();
   showFeedbackLoading();
 
   feedbackGenCount++;
-  const myGen           = feedbackGenCount;
-  const feedbackPromise = callFeedback(text).catch(() => null);
-  const sessionId       = currentSession.sessionId;
-  const prevTurns       = getDailyTurnCount();
+  const myGen     = feedbackGenCount;
+  const sessionId = currentSession.sessionId;
+  const prevTurns = getDailyTurnCount();
 
   let translationEl = null;
 
@@ -1246,7 +1485,7 @@ async function sendMessage(rawText) {
 
     if (ttsEnabled && ttsSupported && lastAiBubble) speak(aiText, lastAiBubble);
 
-    // Fire translation (non-blocking)
+    // Fire translation first (non-blocking)
     callTranslation(aiText).then(translated => {
       if (!translationEl?.isConnected) return;
       if (translated) {
@@ -1256,6 +1495,22 @@ async function sendMessage(rawText) {
         translationEl = null;
       }
     }).catch(() => { translationEl?.remove(); translationEl = null; });
+
+    // Stagger suggestions 800ms after translation to avoid simultaneous hits
+    if (suggestionsEnabled) {
+      showSuggestionsLoading();
+      const suggContext = messages.slice(-6).map(m => ({ role: m.role, content: m.content }));
+      sleep(800)
+        .then(() => callSuggestions(suggContext))
+        .then(raw => {
+          if (!suggestionsEnabled) return;
+          const suggestions = parseSuggestions(raw);
+          if (suggestions.length) renderSuggestions(suggestions);
+          else hideSuggestions();
+        })
+        .catch(() => hideSuggestions());
+    }
+
   } catch (err) {
     hideLoading();
     let msg = '⚠️ 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.';
@@ -1268,8 +1523,10 @@ async function sendMessage(rawText) {
     scrollBottom();
   }
 
-  const feedbackData = await feedbackPromise;
+  // Feedback runs AFTER AI responds (sequential, not parallel) to reduce rate limit pressure
   if (myGen !== feedbackGenCount) return; // superseded by a newer send
+  const feedbackData = await callFeedback(text).catch(() => null);
+  if (myGen !== feedbackGenCount) return;
   if (feedbackData) {
     renderFeedback(feedbackData);
     if (feedbackData.corrections?.length) {
@@ -1868,6 +2125,10 @@ function setupEvents() {
 
   document.getElementById('hideTextBtn')?.addEventListener('click', () => {
     setHideTextMode(!hideAiText);
+  });
+
+  document.getElementById('suggestBtn')?.addEventListener('click', () => {
+    setSuggestionsEnabled(!suggestionsEnabled);
   });
 
   document.getElementById('translationBtn')?.addEventListener('click', () => {
