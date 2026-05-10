@@ -1,11 +1,20 @@
 'use strict';
 
 // ── Constants ────────────────────────────────────────────────────────────────
-const PRIMARY_MODEL        = 'meta-llama/llama-3.3-70b-instruct:free';
-const FALLBACK_MODEL       = 'openai/gpt-oss-20b:free';
-const EXTRA_FALLBACK_MODEL = 'meta-llama/llama-4-scout:free';
-const NEMOTRON_MODEL       = 'nvidia/nemotron-3-super-120b-a12b:free'; // suggestions & translation
-const GEMMA_MODEL          = 'google/gemma-4-31b-it:free';             // feedback
+// AI chat: round-robin across these models to spread rate-limit load
+const AI_MODEL_POOL = [
+  'meta-llama/llama-3.3-70b-instruct:free',
+  'meta-llama/llama-4-maverick:free',
+  'microsoft/phi-4-reasoning-plus:free',
+  'openai/gpt-oss-20b:free',
+  'meta-llama/llama-4-scout:free',
+];
+let aiPoolIdx    = 0;
+let sessionModel = null; // fixed for the duration of one session
+
+const PRIMARY_MODEL  = AI_MODEL_POOL[0]; // translation & suggestions fallback reference
+const FALLBACK_MODEL = 'openai/gpt-oss-20b:free';
+const GEMMA_MODEL    = 'google/gemma-4-31b-it:free'; // feedback
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const MAX_TURNS      = 10;
@@ -691,7 +700,17 @@ function buildSystemPrompt() {
 
   const goalMap = { daily: 'daily conversation', business: 'business English', travel: 'travel English', exam: 'exam preparation' };
   const goals   = (p.goals || []).map(g => goalMap[g] || g).join(', ') || 'general';
-  return base + levelInstruction + `\nLearner's goals: ${goals}.`;
+
+  const continuity =
+    '\n\nCONVERSATION CONSISTENCY RULES (follow strictly):' +
+    '\n- Read the ENTIRE conversation history before responding.' +
+    '\n- Never ask a question you have already asked earlier in this conversation.' +
+    '\n- If the learner has shared personal details (name, job, hobbies, opinions), remember and reference them naturally.' +
+    '\n- Maintain the same warm, consistent persona and tone from your very first message.' +
+    '\n- Ensure smooth, logical topic transitions — never change the subject abruptly.' +
+    '\n- Your response must directly follow from what the learner just said.';
+
+  return base + levelInstruction + `\nLearner's goals: ${goals}.` + continuity;
 }
 
 // ── Session lifecycle ─────────────────────────────────────────────────────────
@@ -700,6 +719,9 @@ function genId() {
 }
 
 function startSession() {
+  // Assign one model for the entire session to maintain conversational consistency
+  sessionModel = AI_MODEL_POOL[aiPoolIdx];
+  aiPoolIdx = (aiPoolIdx + 1) % AI_MODEL_POOL.length;
   currentSession = {
     sessionId: genId(),
     date: new Date().toISOString(),
@@ -1155,28 +1177,28 @@ function parseSuggestions(raw) {
   if (arrMatch) {
     try {
       const arr = JSON.parse(arrMatch[0]);
-      if (Array.isArray(arr) && arr.length) return arr.slice(0, 3).map(s => String(s).trim()).filter(Boolean);
+      if (Array.isArray(arr) && arr.length) return arr.slice(0, 2).map(s => String(s).trim()).filter(Boolean);
     } catch {}
   }
   // 2) fallback: extract quoted strings
   const quoted = [...raw.matchAll(/"([^"]{3,80})"/g)].map(m => m[1].trim()).filter(Boolean);
-  if (quoted.length >= 2) return quoted.slice(0, 3);
+  if (quoted.length >= 2) return quoted.slice(0, 2);
   // 3) fallback: numbered / bulleted lines
   const lines = raw.split('\n')
     .map(l => l.replace(/^[\s\d.)\-*•]+/, '').replace(/^["']|["']$/g, '').trim())
     .filter(l => l.length > 3 && l.length < 100);
-  return lines.slice(0, 3);
+  return lines.slice(0, 2);
 }
 
 async function callSuggestions(conversationContext) {
   const lang = activeLang === 'ja' ? 'Japanese' : 'English';
   const level = getProfile()?.level || 'intermediate';
   const prompt =
-    `You are a language learning assistant. Look at the conversation and output exactly 3 short ${lang} sentences the ${level}-level learner could say next.\n` +
+    `You are a language learning assistant. Look at the conversation and output exactly 2 short ${lang} sentences the ${level}-level learner could say next.\n` +
     `STRICT RULES:\n` +
     `- Each sentence must be under 12 words\n` +
     `- Output ONLY a valid JSON array. No other text, no markdown, no numbering.\n` +
-    `- Format: ["sentence one","sentence two","sentence three"]`;
+    `- Format: ["sentence one","sentence two"]`;
   const msgs = [
     { role: 'system', content: prompt },
     ...conversationContext.slice(-4),
@@ -1361,28 +1383,31 @@ async function fetchStream(apiMessages, model) {
 
 async function callAI(apiMessages) {
   const rateLimited = e => e.status === 429 || e.status === 503 || e.status === 404;
-  try {
-    return await fetchStream(apiMessages, PRIMARY_MODEL);
-  } catch (e1) {
-    if (!rateLimited(e1)) throw e1;
-    // 1.5s backoff then retry primary
-    await sleep(1500); showLoading();
-    try {
-      return await fetchStream(apiMessages, PRIMARY_MODEL);
-    } catch (e2) {
+  // Use the session-fixed model first to keep conversation consistent.
+  // Only fall back to other pool models when rate-limited.
+  const primary = sessionModel || AI_MODEL_POOL[0];
+  const fallbacks = AI_MODEL_POOL.filter(m => m !== primary);
+
+  try { return await fetchStream(apiMessages, primary); }
+  catch (e) {
+    if (!rateLimited(e)) throw e;
+    // Brief wait then retry the same model once
+    await sleep(1000); showLoading();
+    try { return await fetchStream(apiMessages, primary); }
+    catch (e2) {
       if (!rateLimited(e2)) throw e2;
-      // try first fallback
-      await sleep(1000); showLoading();
-      try {
-        return await fetchStream(apiMessages, FALLBACK_MODEL);
-      } catch (e3) {
-        if (!rateLimited(e3)) throw e3;
-        // last resort
-        await sleep(1000); showLoading();
-        return fetchStream(apiMessages, EXTRA_FALLBACK_MODEL);
-      }
     }
   }
+  // Primary exhausted — try fallbacks in pool order
+  for (const model of fallbacks) {
+    try {
+      await sleep(800); showLoading();
+      return await fetchStream(apiMessages, model);
+    } catch (e) {
+      if (!rateLimited(e)) throw e;
+    }
+  }
+  throw Object.assign(new Error('All models rate limited'), { status: 429 });
 }
 
 // ── PII detection ────────────────────────────────────────────────────────────
@@ -1443,8 +1468,8 @@ async function sendMessage(rawText) {
   saveMessage({ role: 'user', content: text, timestamp: ts });
   scrollBottom();
 
-  // Send only the last 12 messages (6 turns) to reduce token load
-  const context = messages.slice(-12).map(m => ({ role: m.role, content: m.content }));
+  // Send the last 20 messages (10 turns) for better conversation continuity
+  const context = messages.slice(-20).map(m => ({ role: m.role, content: m.content }));
   const apiMessages = [{ role: 'system', content: buildSystemPrompt() }, ...context];
 
   showLoading();
@@ -1461,16 +1486,6 @@ async function sendMessage(rawText) {
     const aiText = await callAI(apiMessages);
     const aiTs   = new Date().toISOString();
 
-    // Attach translation placeholder to the AI message element
-    const capturedBubble = lastAiBubble;
-    if (capturedBubble?.parentElement) {
-      translationEl = document.createElement('div');
-      translationEl.className = 'msg-translation';
-      if (!showTranslation) translationEl.classList.add('hidden');
-      translationEl.innerHTML = '<span class="translation-dots"><span></span><span></span><span></span></span>';
-      capturedBubble.parentElement.appendChild(translationEl);
-    }
-
     messages.push({ role: 'assistant', content: aiText, timestamp: aiTs });
     saveMessage({ role: 'assistant', content: aiText, timestamp: aiTs });
 
@@ -1485,16 +1500,22 @@ async function sendMessage(rawText) {
 
     if (ttsEnabled && ttsSupported && lastAiBubble) speak(aiText, lastAiBubble);
 
-    // Fire translation first (non-blocking)
-    callTranslation(aiText).then(translated => {
-      if (!translationEl?.isConnected) return;
-      if (translated) {
-        translationEl.innerHTML = `<span class="translation-label">🇰🇷</span><span class="translation-text">${toHtml(translated)}</span>`;
-      } else {
-        translationEl.remove();
-        translationEl = null;
-      }
-    }).catch(() => { translationEl?.remove(); translationEl = null; });
+    // Fire translation only when enabled (skip API call entirely when OFF)
+    if (showTranslation && lastAiBubble?.parentElement) {
+      translationEl = document.createElement('div');
+      translationEl.className = 'msg-translation';
+      translationEl.innerHTML = '<span class="translation-dots"><span></span><span></span><span></span></span>';
+      lastAiBubble.parentElement.appendChild(translationEl);
+      callTranslation(aiText).then(translated => {
+        if (!translationEl?.isConnected) return;
+        if (translated) {
+          translationEl.innerHTML = `<span class="translation-label">🇰🇷</span><span class="translation-text">${toHtml(translated)}</span>`;
+        } else {
+          translationEl.remove();
+          translationEl = null;
+        }
+      }).catch(() => { translationEl?.remove(); translationEl = null; });
+    }
 
     // Stagger suggestions 800ms after translation to avoid simultaneous hits
     if (suggestionsEnabled) {
@@ -1525,6 +1546,11 @@ async function sendMessage(rawText) {
 
   // Feedback runs AFTER AI responds (sequential, not parallel) to reduce rate limit pressure
   if (myGen !== feedbackGenCount) return; // superseded by a newer send
+  // Skip feedback for very short messages (no meaningful grammar to analyze)
+  if (text.length < 10) {
+    feedbackContent.innerHTML = '<div class="feedback-placeholder">메시지가 너무 짧아 피드백을 건너뜁니다.</div>';
+    return;
+  }
   const feedbackData = await callFeedback(text).catch(() => null);
   if (myGen !== feedbackGenCount) return;
   if (feedbackData) {
