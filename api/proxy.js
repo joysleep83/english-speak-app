@@ -1,8 +1,11 @@
 export const config = { runtime: 'edge' };
 
 const ALLOWED_MODELS = new Set([
-  'meta-llama/llama-3.3-70b-instruct:free',
+  'nvidia/nemotron-3-super-120b-a12b:free',
   'openai/gpt-oss-20b:free',
+  'openai/gpt-oss-120b:free',
+  'meta-llama/llama-3.3-70b-instruct:free',
+  'google/gemma-4-31b-it:free',
 ]);
 const MAX_TOKENS_LIMIT = 600;
 const MAX_MESSAGES     = 22; // MAX_TURNS(10) * 2 + system

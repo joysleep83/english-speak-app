@@ -3,11 +3,10 @@
 // ── Constants ────────────────────────────────────────────────────────────────
 // AI chat: round-robin across these models to spread rate-limit load
 const AI_MODEL_POOL = [
-  'meta-llama/llama-3.3-70b-instruct:free',
-  'meta-llama/llama-4-maverick:free',
-  'microsoft/phi-4-reasoning-plus:free',
+  'nvidia/nemotron-3-super-120b-a12b:free',
   'openai/gpt-oss-20b:free',
-  'meta-llama/llama-4-scout:free',
+  'openai/gpt-oss-120b:free',
+  'meta-llama/llama-3.3-70b-instruct:free',
 ];
 let aiPoolIdx    = 0;
 let sessionModel = null; // fixed for the duration of one session
@@ -19,8 +18,8 @@ const GEMMA_MODEL    = 'google/gemma-4-31b-it:free'; // feedback
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const MAX_TURNS      = 10;
 
-const SUPABASE_URL      = (typeof CONFIG !== 'undefined' && CONFIG.SUPABASE_URL)      || '';
-const SUPABASE_ANON_KEY = (typeof CONFIG !== 'undefined' && CONFIG.SUPABASE_ANON_KEY) || '';
+const SUPABASE_URL      = (typeof CONFIG !== 'undefined' && CONFIG.SUPABASE_URL)      || 'https://zicpadtfsikbcmvhipfz.supabase.co';
+const SUPABASE_ANON_KEY = (typeof CONFIG !== 'undefined' && CONFIG.SUPABASE_ANON_KEY) || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InppY3BhZHRmc2lrYmNtdmhpcGZ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc5NjAzMzMsImV4cCI6MjA5MzUzNjMzM30.z0hwuhPH2cTBB_f728FbhuNolLtW30C9Y7cS8S_8ca0';
 
 // config.js가 있으면 직접 호출(로컬 개발), 없으면 Vercel Edge Function 프록시 사용
 const LOCAL_API_KEY = (typeof CONFIG !== 'undefined' && CONFIG.OPENROUTER_API_KEY)
@@ -290,6 +289,7 @@ async function dbInit() {
   if (pRes.status === 'fulfilled' && pRes.value.data) {
     const d = pRes.value.data;
     cachedProfile = { name: d.name, level: d.level, goals: d.goals || [], dailyTarget: d.daily_target };
+    if (d.lang) activeLang = d.lang;
   }
 
   if (sRes.status === 'fulfilled' && sRes.value.data) {
@@ -357,6 +357,7 @@ function saveProfile(p) {
     user_id: userId, name: p.name, level: p.level, goals: p.goals,
     daily_target: p.dailyTarget, updated_at: new Date().toISOString(),
   }, { onConflict: 'user_id' }).then(({ error }) => { if (error) console.error('saveProfile', error); });
+  // lang is synced separately in setActiveLang() after migration adds the column
 }
 
 // ── Sessions DB ───────────────────────────────────────────────────────────────
@@ -513,6 +514,12 @@ function updateHeaderProfile() {
 function setActiveLang(lang) {
   activeLang = lang;
   localStorage.setItem(`eai_lang_${activeSlot}`, lang);
+  if (supa && userId) {
+    supa.from('profiles').upsert(
+      { user_id: userId, lang, updated_at: new Date().toISOString() },
+      { onConflict: 'user_id' }
+    ).then(({ error }) => { if (error) console.error('setActiveLang save', error); });
+  }
   const cfg = LANG_CONFIG[lang];
   if (recognition) recognition.lang = cfg.sttLang;
   const inputEl = document.getElementById('userInput');
@@ -544,7 +551,7 @@ async function switchProfileSlot(slot) {
   messages        = [];
   currentSession  = null;
   cachedReviews   = [];
-  activeLang      = localStorage.getItem(`eai_lang_${slot}`) || 'en';
+  activeLang      = localStorage.getItem(`eai_lang_${slot}`) || 'en'; // overwritten by dbInit if Supabase has a value
 
   await dbInit();
 
