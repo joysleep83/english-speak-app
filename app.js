@@ -1076,7 +1076,7 @@ async function doFeedbackFetch(model, apiMsgs) {
     const res = await fetch(API_URL, {
       method: 'POST',
       headers: apiHeaders(),
-      body: JSON.stringify({ model, messages: apiMsgs, stream: false, max_tokens: 350 }),
+      body: JSON.stringify({ model, messages: apiMsgs, stream: false, max_tokens: 350, reasoning: { exclude: true } }),
       signal: ctrl.signal,
     });
     if (!res.ok) throw Object.assign(new Error(`${res.status}`), { status: res.status });
@@ -1125,7 +1125,7 @@ async function doTextFetch(model, apiMsgs, maxTokens = 300) {
     const res = await fetch(API_URL, {
       method: 'POST',
       headers: apiHeaders(),
-      body: JSON.stringify({ model, messages: apiMsgs, stream: false, max_tokens: maxTokens }),
+      body: JSON.stringify({ model, messages: apiMsgs, stream: false, max_tokens: maxTokens, reasoning: { exclude: true } }),
       signal: ctrl.signal,
     });
     if (!res.ok) throw Object.assign(new Error(`${res.status}`), { status: res.status });
@@ -1339,7 +1339,7 @@ async function fetchStream(apiMessages, model) {
     res = await fetch(API_URL, {
       method: 'POST',
       headers: apiHeaders(),
-      body: JSON.stringify({ model, messages: apiMessages, stream: true, max_tokens: 300 }),
+      body: JSON.stringify({ model, messages: apiMessages, stream: true, max_tokens: 300, reasoning: { exclude: true } }),
       signal: ctrl.signal,
     });
   } finally { clearTimeout(timer); }
