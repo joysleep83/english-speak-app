@@ -31,10 +31,15 @@ Copy from `config.example.js`. If absent, `getApiKey()` falls back to `localStor
 
 ## Models
 
-- **Primary**: `meta-llama/llama-3.3-70b-instruct:free`
-- **Fallback**: `openai/gpt-oss-20b:free`
+**AI Chat pool** (round-robin, English-conversation-optimised, no reasoning models, no Chinese models):
+- `meta-llama/llama-3.3-70b-instruct:free` — primary
+- `nousresearch/hermes-3-llama-3.1-405b:free` — fallback
+- `google/gemma-4-26b-a4b-it:free`
+- `openai/gpt-oss-20b:free`
 
-`callAI()` and `callFeedback()` both retry on 429/503/404 with the fallback. The primary model is frequently rate-limited; the fallback is more reliable.
+**Feedback**: `google/gemma-4-31b-it:free`
+
+`callAI()` retries on 429/503/404 by cycling to the next pool model. `callFeedback()` uses the Gemma model directly.
 
 ## Tech Stack
 
