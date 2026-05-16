@@ -8,6 +8,11 @@ const AI_MODEL_POOL = [
   'google/gemma-4-26b-a4b-it:free',
   'openai/gpt-oss-20b:free',
 ];
+// Last-resort backup models — tried only when Gemini + all pool models are rate-limited
+const AI_BACKUP_POOL = [
+  'mistralai/mistral-7b-instruct:free',
+  'microsoft/phi-4-mini-instruct:free',
+];
 let aiPoolIdx    = 0;
 let sessionModel = null; // fixed for the duration of one session
 
@@ -28,6 +33,9 @@ const USE_PROXY = !LOCAL_API_KEY;
 const API_URL   = USE_PROXY
   ? '/api/proxy'
   : 'https://openrouter.ai/api/v1/chat/completions';
+
+const GEMINI_API_KEY = (typeof CONFIG !== 'undefined' && CONFIG.GEMINI_API_KEY) || '';
+const GEMINI_MODEL   = 'gemini-2.0-flash';
 
 function apiHeaders() {
   const headers = {
@@ -945,6 +953,17 @@ function parseSSE(chunk) {
   return tokens;
 }
 
+function parseGeminiSSE(chunk) {
+  const tokens = [];
+  for (const line of chunk.split('\n')) {
+    if (!line.startsWith('data: ')) continue;
+    const raw = line.slice(6).trim();
+    if (!raw) continue;
+    try { const tok = JSON.parse(raw).candidates?.[0]?.content?.parts?.[0]?.text; if (tok) tokens.push(tok); } catch {}
+  }
+  return tokens;
+}
+
 // ── TTS ───────────────────────────────────────────────────────────────────────
 function wrapWordsForHighlight(text) {
   let html = '', i = 0;
@@ -1391,32 +1410,106 @@ async function fetchStream(apiMessages, model) {
   return fullText;
 }
 
+async function fetchGeminiStream(apiMessages) {
+  const systemMsg = apiMessages.find(m => m.role === 'system');
+  const turns = apiMessages
+    .filter(m => m.role !== 'system')
+    .map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
+
+  const body = { contents: turns, generationConfig: { maxOutputTokens: 300 } };
+  if (systemMsg) body.systemInstruction = { parts: [{ text: systemMsg.content }] };
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:streamGenerateContent?alt=sse&key=${GEMINI_API_KEY}`;
+  const ctrl  = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 30000);
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+  } finally { clearTimeout(timer); }
+  if (!res.ok) throw Object.assign(new Error(`Gemini ${res.status}`), { status: res.status });
+
+  hideLoading();
+  clearWelcome();
+
+  const ts       = new Date().toISOString();
+  const msgEl    = document.createElement('div'); msgEl.className = 'msg ai';
+  const bubbleEl = document.createElement('div'); bubbleEl.className = 'bubble streaming';
+  const footerEl = document.createElement('div'); footerEl.className = 'msg-footer';
+  const tsEl     = document.createElement('time'); tsEl.className = 'ts'; tsEl.textContent = fmtTime(ts);
+  footerEl.appendChild(tsEl);
+  msgEl.appendChild(bubbleEl); msgEl.appendChild(footerEl);
+  chatEl.appendChild(msgEl);
+  lastAiBubble = bubbleEl;
+
+  const reader  = res.body.getReader();
+  const decoder = new TextDecoder();
+  let fullText  = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    for (const tok of parseGeminiSSE(decoder.decode(value, { stream: true }))) {
+      fullText += tok;
+      bubbleEl.innerHTML = toHtml(fullText);
+      scrollBottom();
+    }
+  }
+  bubbleEl.classList.remove('streaming');
+  if (!fullText.trim()) { msgEl.remove(); lastAiBubble = null; throw new Error('Empty response'); }
+
+  const replayBtn = document.createElement('button');
+  replayBtn.className = 'btn-replay';
+  replayBtn.title = '다시 듣기';
+  replayBtn.textContent = '🔊';
+  replayBtn.addEventListener('click', () => speak(fullText, bubbleEl));
+  footerEl.prepend(replayBtn);
+
+  if (hideAiText) {
+    bubbleEl.classList.add('text-hidden');
+    attachRevealOnClick(bubbleEl);
+  }
+
+  return fullText;
+}
+
 async function callAI(apiMessages) {
   const rateLimited = e => e.status === 429 || e.status === 503 || e.status === 404;
-  // Use the session-fixed model first to keep conversation consistent.
-  // Only fall back to other pool models when rate-limited.
+
+  // 1단계: Gemini (primary)
+  if (GEMINI_API_KEY) {
+    try { return await fetchGeminiStream(apiMessages); }
+    catch (e) { if (!rateLimited(e)) throw e; }
+    await sleep(1000); showLoading();
+    try { return await fetchGeminiStream(apiMessages); }
+    catch (e) { if (!rateLimited(e)) throw e; }
+  }
+
+  // 2단계: OpenRouter 풀 (session-fixed primary → 나머지 순서)
   const primary = sessionModel || AI_MODEL_POOL[0];
-  const fallbacks = AI_MODEL_POOL.filter(m => m !== primary);
+  const poolFallbacks = AI_MODEL_POOL.filter(m => m !== primary);
 
   try { return await fetchStream(apiMessages, primary); }
   catch (e) {
     if (!rateLimited(e)) throw e;
-    // Brief wait then retry the same model once
     await sleep(1000); showLoading();
     try { return await fetchStream(apiMessages, primary); }
-    catch (e2) {
-      if (!rateLimited(e2)) throw e2;
-    }
+    catch (e2) { if (!rateLimited(e2)) throw e2; }
   }
-  // Primary exhausted — try fallbacks in pool order
-  for (const model of fallbacks) {
-    try {
-      await sleep(800); showLoading();
-      return await fetchStream(apiMessages, model);
-    } catch (e) {
-      if (!rateLimited(e)) throw e;
-    }
+  for (const model of poolFallbacks) {
+    try { await sleep(800); showLoading(); return await fetchStream(apiMessages, model); }
+    catch (e) { if (!rateLimited(e)) throw e; }
   }
+
+  // 3단계: 백업 풀 (최후 수단)
+  for (const model of AI_BACKUP_POOL) {
+    try { await sleep(800); showLoading(); return await fetchStream(apiMessages, model); }
+    catch (e) { if (!rateLimited(e)) throw e; }
+  }
+
   throw Object.assign(new Error('All models rate limited'), { status: 429 });
 }
 
