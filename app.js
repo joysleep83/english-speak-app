@@ -1,24 +1,23 @@
 'use strict';
 
 // ── Constants ────────────────────────────────────────────────────────────────
-// AI chat: round-robin across these models to spread rate-limit load
+// OpenRouter fallback pool — Google / OpenAI / Meta only, no Chinese models
 const AI_MODEL_POOL = [
-  'meta-llama/llama-3.3-70b-instruct:free',
-  'nousresearch/hermes-3-llama-3.1-405b:free',
-  'google/gemma-4-26b-a4b-it:free',
-  'openai/gpt-oss-20b:free',
+  'meta-llama/llama-3.3-70b-instruct:free',  // Meta  — LLaMA 3.3 70B
+  'openai/gpt-oss-20b:free',                  // OpenAI — GPT-OSS 20B
+  'google/gemma-4-26b-a4b-it:free',           // Google — Gemma 4 26B
 ];
-// Last-resort backup models — tried only when Gemini + all pool models are rate-limited
+// Last-resort — tried only when Gemini + all pool models are rate-limited
 const AI_BACKUP_POOL = [
-  'mistralai/mistral-7b-instruct:free',
-  'microsoft/phi-4-mini-instruct:free',
+  'openai/gpt-oss-120b:free',                 // OpenAI — GPT-OSS 120B (MoE)
+  'google/gemma-4-31b-it:free',               // Google — Gemma 4 31B
 ];
 let aiPoolIdx    = 0;
-let sessionModel = null; // fixed for the duration of one session
+let sessionModel = null;
 
-const PRIMARY_MODEL  = AI_MODEL_POOL[0]; // translation & suggestions fallback reference
-const FALLBACK_MODEL = 'nousresearch/hermes-3-llama-3.1-405b:free';
-const GEMMA_MODEL    = 'google/gemma-4-31b-it:free'; // feedback
+const PRIMARY_MODEL  = AI_MODEL_POOL[0]; // meta-llama — translation & suggestions
+const FALLBACK_MODEL = AI_MODEL_POOL[1]; // openai gpt-oss
+const GEMMA_MODEL    = 'google/gemma-4-31b-it:free'; // Google — feedback
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const MAX_TURNS      = 10;
@@ -1126,9 +1125,9 @@ function buildFeedbackPrompt() {
 async function callFeedback(text) {
   const msgs = [{ role: 'system', content: buildFeedbackPrompt() }, { role: 'user', content: text }];
   const feedbackModels = [
-    GEMMA_MODEL,
-    'mistralai/mistral-7b-instruct:free',
-    'microsoft/phi-4-mini-instruct:free',
+    'google/gemma-4-31b-it:free',              // Google — Gemma 4 31B
+    'meta-llama/llama-3.3-70b-instruct:free',  // Meta   — LLaMA 3.3 70B
+    'openai/gpt-oss-20b:free',                 // OpenAI — GPT-OSS 20B
   ];
   for (const model of feedbackModels) {
     try { return await doFeedbackFetch(model, msgs); }
@@ -1181,7 +1180,11 @@ async function callTranslation(text) {
     { role: 'system', content: systemMsg },
     { role: 'user', content: text },
   ];
-  const translationModels = [PRIMARY_MODEL, FALLBACK_MODEL, 'mistralai/mistral-7b-instruct:free'];
+  const translationModels = [
+    'meta-llama/llama-3.3-70b-instruct:free',  // Meta   — LLaMA 3.3 70B
+    'openai/gpt-oss-20b:free',                 // OpenAI — GPT-OSS 20B
+    'google/gemma-4-26b-a4b-it:free',          // Google — Gemma 4 26B
+  ];
   for (const model of translationModels) {
     try {
       const result = cleanTranslation(await doTextFetch(model, msgs, 250));
@@ -1227,7 +1230,11 @@ async function callSuggestions(conversationContext) {
     ...conversationContext.slice(-4),
     { role: 'user', content: 'Give me 3 response suggestions as a JSON array.' },
   ];
-  const suggestionModels = [PRIMARY_MODEL, FALLBACK_MODEL, 'mistralai/mistral-7b-instruct:free'];
+  const suggestionModels = [
+    'meta-llama/llama-3.3-70b-instruct:free',  // Meta   — LLaMA 3.3 70B
+    'openai/gpt-oss-20b:free',                 // OpenAI — GPT-OSS 20B
+    'google/gemma-4-26b-a4b-it:free',          // Google — Gemma 4 26B
+  ];
   for (const model of suggestionModels) {
     try { return await doTextFetch(model, msgs, 200); }
     catch {}

@@ -1,15 +1,13 @@
 export const config = { runtime: 'edge' };
 
 const ALLOWED_MODELS = new Set([
-  // AI chat pool
+  // Meta — LLaMA
   'meta-llama/llama-3.3-70b-instruct:free',
-  'nousresearch/hermes-3-llama-3.1-405b:free',
-  'google/gemma-4-26b-a4b-it:free',
+  // OpenAI
   'openai/gpt-oss-20b:free',
-  // backup pool
-  'mistralai/mistral-7b-instruct:free',
-  'microsoft/phi-4-mini-instruct:free',
-  // feedback
+  'openai/gpt-oss-120b:free',
+  // Google — Gemma
+  'google/gemma-4-26b-a4b-it:free',
   'google/gemma-4-31b-it:free',
 ]);
 const MAX_TOKENS_LIMIT = 600;

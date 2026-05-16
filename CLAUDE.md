@@ -31,14 +31,17 @@ Copy from `config.example.js`. If absent, `getApiKey()` falls back to `localStor
 
 ## Models
 
-**AI Chat** (no reasoning models, no Chinese models):
+**AI Chat** (Google / OpenAI / Meta only — no Chinese models):
 - Primary: `gemini-2.0-flash` via Google AI Studio (requires `GEMINI_API_KEY` in `config.js`)
-- OpenRouter pool (round-robin fallback): `meta-llama/llama-3.3-70b-instruct:free`, `nousresearch/hermes-3-llama-3.1-405b:free`, `google/gemma-4-26b-a4b-it:free`, `openai/gpt-oss-20b:free`
-- Last-resort backup pool: `mistralai/mistral-7b-instruct:free`, `microsoft/phi-4-mini-instruct:free`
+- OpenRouter pool (fallback): `meta-llama/llama-3.3-70b-instruct:free` (Meta), `openai/gpt-oss-20b:free` (OpenAI), `google/gemma-3-27b-it:free` (Google)
+- Last-resort backup: `openai/gpt-oss-120b:free`, `google/gemma-3-12b-it:free`
 
-**Feedback**: `google/gemma-4-31b-it:free` (OpenRouter)
+**Feedback**: tries `google/gemma-3-27b-it:free` → `meta-llama/llama-3.3-70b-instruct:free` → `openai/gpt-oss-20b:free`
+**Translation / Suggestions**: tries `meta-llama/llama-3.3-70b-instruct:free` → `openai/gpt-oss-20b:free` → `google/gemma-3-27b-it:free`
 
-`callAI()` tries Gemini first, falls back to OpenRouter pool, then backup pool on 429/503/404. `callFeedback()` uses the Gemma model directly.
+Note: Anthropic Claude has no free models on OpenRouter — not included.
+
+`callAI()` tries Gemini first, falls back to OpenRouter pool, then backup pool on any error. Feedback/translation/suggestions each try 3 models before returning null.
 
 ## Tech Stack
 
