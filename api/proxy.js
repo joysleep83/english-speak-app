@@ -1,14 +1,14 @@
 export const config = { runtime: 'edge' };
 
 const ALLOWED_MODELS = new Set([
-  // Meta — LLaMA
+  // Google — Gemma (primary, fast)
+  'google/gemma-4-31b-it:free',
+  'google/gemma-4-26b-a4b-it:free',
+  // Meta — LLaMA (secondary)
   'meta-llama/llama-3.3-70b-instruct:free',
-  // OpenAI
+  // OpenAI — GPT-OSS (slow backup)
   'openai/gpt-oss-20b:free',
   'openai/gpt-oss-120b:free',
-  // Google — Gemma
-  'google/gemma-4-26b-a4b-it:free',
-  'google/gemma-4-31b-it:free',
 ]);
 const MAX_TOKENS_LIMIT = 600;
 const MAX_MESSAGES     = 22; // MAX_TURNS(10) * 2 + system
