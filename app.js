@@ -34,7 +34,7 @@ const API_URL   = USE_PROXY
   : 'https://openrouter.ai/api/v1/chat/completions';
 
 const GEMINI_API_KEY = (typeof CONFIG !== 'undefined' && CONFIG.GEMINI_API_KEY) || '';
-const GEMINI_MODEL   = 'gemini-2.0-flash';
+const GEMINI_MODEL   = 'gemini-3.1-flash-lite';
 
 function apiHeaders() {
   const headers = {
