@@ -1125,18 +1125,16 @@ function buildFeedbackPrompt() {
 
 async function callFeedback(text) {
   const msgs = [{ role: 'system', content: buildFeedbackPrompt() }, { role: 'user', content: text }];
-  const rateLimited = e => e.status === 429 || e.status === 503 || e.status === 404;
-  try { return await doFeedbackFetch(GEMMA_MODEL, msgs); }
-  catch (e) {
-    if (!rateLimited(e)) throw e;
-    await sleep(1500);
-    try { return await doFeedbackFetch(GEMMA_MODEL, msgs); }
-    catch (e2) {
-      if (!rateLimited(e2)) throw e2;
-      await sleep(1000);
-      return doFeedbackFetch(FALLBACK_MODEL, msgs);
-    }
+  const feedbackModels = [
+    GEMMA_MODEL,
+    'mistralai/mistral-7b-instruct:free',
+    'microsoft/phi-4-mini-instruct:free',
+  ];
+  for (const model of feedbackModels) {
+    try { return await doFeedbackFetch(model, msgs); }
+    catch { await sleep(800); }
   }
+  return null;
 }
 
 // ── Translation API ───────────────────────────────────────────────────────────
@@ -1183,19 +1181,15 @@ async function callTranslation(text) {
     { role: 'system', content: systemMsg },
     { role: 'user', content: text },
   ];
-  const rateLimited = e => e.status === 429 || e.status === 503 || e.status === 404;
-  const tryFetch = async (model) => cleanTranslation(await doTextFetch(model, msgs, 250));
-
-  try { return await tryFetch(PRIMARY_MODEL); }
-  catch (e) {
-    if (!rateLimited(e)) return null;
-    await sleep(1500);
-    try { return await tryFetch(PRIMARY_MODEL); }
-    catch (e2) {
-      if (!rateLimited(e2)) return null;
-      return tryFetch(FALLBACK_MODEL).catch(() => null);
-    }
+  const translationModels = [PRIMARY_MODEL, FALLBACK_MODEL, 'mistralai/mistral-7b-instruct:free'];
+  for (const model of translationModels) {
+    try {
+      const result = cleanTranslation(await doTextFetch(model, msgs, 250));
+      if (result) return result;
+    } catch {}
+    await sleep(800);
   }
+  return null;
 }
 
 // ── Suggestions ───────────────────────────────────────────────────────────────
@@ -1233,19 +1227,13 @@ async function callSuggestions(conversationContext) {
     ...conversationContext.slice(-4),
     { role: 'user', content: 'Give me 3 response suggestions as a JSON array.' },
   ];
-  const rateLimited = e => e.status === 429 || e.status === 503 || e.status === 404;
-  const tryFetch = model => doTextFetch(model, msgs, 200);
-
-  try { return await tryFetch(PRIMARY_MODEL); }
-  catch (e) {
-    if (!rateLimited(e)) return null;
-    await sleep(1500);
-    try { return await tryFetch(PRIMARY_MODEL); }
-    catch (e2) {
-      if (!rateLimited(e2)) return null;
-      return tryFetch(FALLBACK_MODEL).catch(() => null);
-    }
+  const suggestionModels = [PRIMARY_MODEL, FALLBACK_MODEL, 'mistralai/mistral-7b-instruct:free'];
+  for (const model of suggestionModels) {
+    try { return await doTextFetch(model, msgs, 200); }
+    catch {}
+    await sleep(800);
   }
+  return null;
 }
 
 function showSuggestionsLoading() {

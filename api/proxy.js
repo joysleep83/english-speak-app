@@ -1,10 +1,15 @@
 export const config = { runtime: 'edge' };
 
 const ALLOWED_MODELS = new Set([
-  'nvidia/nemotron-3-super-120b-a12b:free',
-  'openai/gpt-oss-20b:free',
-  'openai/gpt-oss-120b:free',
+  // AI chat pool
   'meta-llama/llama-3.3-70b-instruct:free',
+  'nousresearch/hermes-3-llama-3.1-405b:free',
+  'google/gemma-4-26b-a4b-it:free',
+  'openai/gpt-oss-20b:free',
+  // backup pool
+  'mistralai/mistral-7b-instruct:free',
+  'microsoft/phi-4-mini-instruct:free',
+  // feedback
   'google/gemma-4-31b-it:free',
 ]);
 const MAX_TOKENS_LIMIT = 600;
