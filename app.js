@@ -2125,9 +2125,14 @@ function setupSpeech() {
   recognition.lang = LANG_CONFIG[activeLang].sttLang; recognition.continuous = true; recognition.interimResults = true;
 
   let accumulatedFinal = '';
+  // Tracks how many final results have been added to accumulatedFinal.
+  // Android Chrome reports e.resultIndex=0 for all events (bug), so we use
+  // this counter to avoid re-processing already-accumulated final results.
+  let finalResultCount = 0;
 
   recognition.onstart = () => {
     accumulatedFinal = '';
+    finalResultCount = 0;
     isListening = true;
     micBtn.classList.add('listening'); micBtn.setAttribute('aria-label', 'Stop voice input');
     micIcon.style.display = 'none'; stopIcon.style.display = 'block';
@@ -2135,14 +2140,22 @@ function setupSpeech() {
   };
   recognition.onresult = (e) => {
     let interim = '';
-    for (const r of Array.from(e.results).slice(e.resultIndex)) {
-      if (r.isFinal) accumulatedFinal += r[0].transcript + ' ';
-      else interim += r[0].transcript;
+    for (let i = 0; i < e.results.length; i++) {
+      const r = e.results[i];
+      if (r.isFinal) {
+        if (i >= finalResultCount) {
+          accumulatedFinal += r[0].transcript + ' ';
+          finalResultCount = i + 1;
+        }
+      } else {
+        interim += r[0].transcript;
+      }
     }
     const preview = (accumulatedFinal + interim).trim();
     if (preview) showInterim(`🎤 ${preview}`);
   };
   recognition.onend = () => {
+    if (!isListening) return;
     isListening = false;
     micBtn.classList.remove('listening'); micBtn.setAttribute('aria-label', 'Start voice input');
     micIcon.style.display = 'block'; stopIcon.style.display = 'none';
@@ -2150,10 +2163,12 @@ function setupSpeech() {
     const text = accumulatedFinal.trim();
     if (text) { inputEl.value = text; inputEl.dispatchEvent(new Event('input')); }
     accumulatedFinal = '';
+    finalResultCount = 0;
   };
   recognition.onerror = (e) => {
     isListening = false;
     accumulatedFinal = '';
+    finalResultCount = 0;
     micBtn.classList.remove('listening'); micIcon.style.display = 'block'; stopIcon.style.display = 'none'; hideInterim();
     if (e.error === 'not-allowed') showError('⚠️ 마이크 권한이 거부되었습니다.');
   };
