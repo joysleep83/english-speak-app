@@ -1,11 +1,10 @@
 'use strict';
 
 // ── Constants ────────────────────────────────────────────────────────────────
-// OpenRouter fallback pool — 속도 우선: Google Gemma (빠름) → Meta → OpenAI(느린 백업)
-// No Chinese models. Verified response times: Gemma ~1-2s, GPT-OSS 7-28s (slow backup only)
+// OpenRouter fallback pool — 품질 우선: Gemma 31B → LLaMA 70B
+// No Chinese models. Gemma 26B-A4B removed (only 4B active params — poor conversation quality)
 const AI_MODEL_POOL = [
   'google/gemma-4-31b-it:free',               // Google — Gemma 4 31B  ~1s ★★★★★
-  'google/gemma-4-26b-a4b-it:free',           // Google — Gemma 4 26B  ~2s ★★★★
   'meta-llama/llama-3.3-70b-instruct:free',   // Meta   — LLaMA 3.3 70B    ★★★
 ];
 // Last-resort — slow but reliable when Gemma & LLaMA are rate-limited
@@ -13,7 +12,6 @@ const AI_BACKUP_POOL = [
   'openai/gpt-oss-20b:free',                  // OpenAI — GPT-OSS 20B  (느림)
   'openai/gpt-oss-120b:free',                 // OpenAI — GPT-OSS 120B (느림)
 ];
-let aiPoolIdx    = 0;
 let sessionModel = null;
 
 const PRIMARY_MODEL  = AI_MODEL_POOL[0]; // gemma-4-31b — translation & suggestions
@@ -54,7 +52,7 @@ const LANG_CONFIG = {
     inputPlaceholder: 'Type in English or tap 🎤 to speak…',
     feedbackPlaceholder: 'Send a message to get feedback on your English.',
     welcome: (name) => `Hi${name}! I'm your English conversation partner.<br>Let's start practicing — type a message or tap 🎤 to speak!`,
-    systemPrompt: 'You are a friendly English conversation partner. Respond naturally in English. Keep responses concise (2-4 sentences). Encourage the user to continue speaking. IMPORTANT: Never use markdown formatting — no asterisks, no bullet points, no headers. Plain text only.',
+    systemPrompt: 'You are a friendly English conversation partner. Respond naturally in English. Encourage the user to continue speaking. IMPORTANT: Never use markdown formatting — no asterisks, no bullet points, no headers. Plain text only.',
     feedbackPrompt:
       'You are an English language teacher. Analyze the user\'s sentence for:\n' +
       '1. Grammar errors\n2. Unnatural expressions\n3. Vocabulary improvements\n\n' +
@@ -735,9 +733,7 @@ function genId() {
 }
 
 function startSession() {
-  // Assign one model for the entire session to maintain conversational consistency
-  sessionModel = AI_MODEL_POOL[aiPoolIdx];
-  aiPoolIdx = (aiPoolIdx + 1) % AI_MODEL_POOL.length;
+  sessionModel = AI_MODEL_POOL[0];
   currentSession = {
     sessionId: genId(),
     date: new Date().toISOString(),
