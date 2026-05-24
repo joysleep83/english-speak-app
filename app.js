@@ -50,7 +50,7 @@ const LANG_CONFIG = {
     flag: '🇺🇸', name: 'English',
     sttLang: 'en-US', ttsLang: 'en-US',
     inputPlaceholder: 'Type in English or tap 🎤 to speak…',
-    feedbackPlaceholder: 'Send a message to get feedback on your English.',
+    feedbackPlaceholder: '메시지 옆 ✍️ 피드백 버튼을 눌러 피드백을 받으세요.',
     welcome: (name) => `Hi${name}! I'm your English conversation partner.<br>Let's start practicing — type a message or tap 🎤 to speak!`,
     systemPrompt: 'You are a friendly English conversation partner. Respond naturally in English. Encourage the user to continue speaking. IMPORTANT: Never use markdown formatting — no asterisks, no bullet points, no headers. Plain text only.',
     feedbackPrompt:
@@ -66,7 +66,7 @@ const LANG_CONFIG = {
     flag: '🇯🇵', name: '日本語',
     sttLang: 'ja-JP', ttsLang: 'ja-JP',
     inputPlaceholder: '日本語で入力するか、🎤をタップして話してください…',
-    feedbackPlaceholder: '메시지를 보내면 일본어 피드백을 받아볼 수 있습니다.',
+    feedbackPlaceholder: '메시지 옆 ✍️ 피드백 버튼을 눌러 피드백을 받으세요.',
     welcome: (name) => `こんにちは${name}！日本語の練習をしましょう。<br>メッセージを入力するか、🎤をタップして話してください！`,
     systemPrompt: 'You are a friendly Japanese conversation partner. Respond naturally in Japanese using appropriate hiragana, katakana, and kanji. Keep responses concise (2-4 sentences). Encourage the user to continue speaking. IMPORTANT: Never use markdown formatting — no asterisks, no bullet points, no headers. Plain text only.',
     feedbackPrompt:
@@ -218,10 +218,7 @@ let isTTSPaused   = false;
 let lastAiBubble  = null;
 let ttsKeepAlive  = null;
 
-let showTranslation   = true;
 let hideAiText        = false;
-let feedbackGenCount  = 0;
-let suggestionsEnabled = true;
 
 let weeklyChartInst = null;
 let errorChartInst  = null;
@@ -901,6 +898,45 @@ function renderMessage(role, content, timestamp, animate = true) {
   tsEl.textContent = fmtTime(timestamp);
   footerEl.appendChild(tsEl);
 
+  if (role === 'user') {
+    const fbBtn = document.createElement('button');
+    fbBtn.className = 'btn-msg-action';
+    fbBtn.title = '피드백 받기';
+    fbBtn.textContent = '✍️ 피드백';
+    fbBtn.addEventListener('click', async () => {
+      if (content.length < 10) {
+        feedbackContent.innerHTML = '<div class="feedback-placeholder">메시지가 너무 짧아 피드백을 건너뜁니다.</div>';
+        return;
+      }
+      fbBtn.disabled = true;
+      fbBtn.textContent = '...';
+      showFeedbackLoading();
+      if (window.innerWidth <= 600) {
+        feedbackPanel.classList.remove('collapsed');
+        feedbackToggleBtn.setAttribute('aria-expanded', 'true');
+        feedbackToggleBtn.textContent = '▾';
+      }
+      try {
+        const feedbackData = await callFeedback(content);
+        renderFeedback(feedbackData);
+        if (feedbackData.corrections?.length) {
+          const sid = currentSession?.sessionId;
+          const items = feedbackData.corrections.map(c => ({
+            date: new Date().toISOString(), sessionId: sid,
+            original: c.original, corrected: c.corrected,
+            type: c.type, explanation: c.explanation,
+          }));
+          appendFeedbackLog(items);
+          if (sid) addSessionFeedbacks(items);
+        }
+      } catch (err) {
+        feedbackContent.innerHTML = '<div class="feedback-placeholder">피드백을 불러올 수 없습니다.</div>';
+        showAIErrorModal(err, '문법 피드백');
+      }
+    });
+    footerEl.appendChild(fbBtn);
+  }
+
   el.appendChild(bubbleEl);
   el.appendChild(footerEl);
   chatEl.appendChild(el);
@@ -1119,22 +1155,55 @@ function buildFeedbackPrompt() {
 
 async function callFeedback(text) {
   const msgs = [{ role: 'system', content: buildFeedbackPrompt() }, { role: 'user', content: text }];
-  const feedbackModels = [
-    'google/gemma-4-31b-it:free',              // Google — Gemma 4 31B  ~1s
-    'google/gemma-4-26b-a4b-it:free',          // Google — Gemma 4 26B  ~2s
-    'openai/gpt-oss-20b:free',                 // OpenAI — GPT-OSS 20B  (백업)
+  const orModels = [
+    ...AI_MODEL_POOL,
+    ...AI_BACKUP_POOL,
   ];
-  for (const model of feedbackModels) {
-    try { return await doFeedbackFetch(model, msgs); }
-    catch { await sleep(800); }
+  const attempts = [];
+
+  if (GEMINI_API_KEY) {
+    try {
+      const raw = await doGeminiFetch(msgs, 350);
+      if (raw) return parseJSONFromText(raw);
+    } catch (e) { attempts.push({ model: GEMINI_MODEL, err: e }); }
+    await sleep(800);
   }
-  return null;
+
+  for (const model of orModels) {
+    try { return await doFeedbackFetch(model, msgs); }
+    catch (e) { attempts.push({ model, err: e }); await sleep(800); }
+  }
+  throw Object.assign(new Error('All feedback models failed'), { status: 429, attempts });
 }
 
 // ── Translation API ───────────────────────────────────────────────────────────
+async function doGeminiFetch(apiMsgs, maxTokens = 300) {
+  const systemMsg = apiMsgs.find(m => m.role === 'system');
+  const turns = apiMsgs
+    .filter(m => m.role !== 'system')
+    .map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
+  const body = { contents: turns, generationConfig: { maxOutputTokens: maxTokens } };
+  if (systemMsg) body.systemInstruction = { parts: [{ text: systemMsg.content }] };
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+  const ctrl  = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 15000);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) throw Object.assign(new Error(`Gemini ${res.status}`), { status: res.status });
+    const data = await res.json();
+    return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
+  } finally { clearTimeout(timer); }
+}
+
 async function doTextFetch(model, apiMsgs, maxTokens = 300) {
   const ctrl  = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 8000);
+  const timer = setTimeout(() => ctrl.abort(), 25000);
   try {
     const res = await fetch(API_URL, {
       method: 'POST',
@@ -1175,19 +1244,28 @@ async function callTranslation(text) {
     { role: 'system', content: systemMsg },
     { role: 'user', content: text },
   ];
-  const translationModels = [
-    'google/gemma-4-26b-a4b-it:free',          // Google — Gemma 4 26B  ~2s (한국어 번역 최적)
-    'google/gemma-4-31b-it:free',              // Google — Gemma 4 31B  ~1s
-    'openai/gpt-oss-20b:free',                 // OpenAI — GPT-OSS 20B  (백업)
+  const orModels = [
+    ...AI_MODEL_POOL,
+    ...AI_BACKUP_POOL,
   ];
-  for (const model of translationModels) {
+  const attempts = [];
+
+  if (GEMINI_API_KEY) {
     try {
-      const result = cleanTranslation(await doTextFetch(model, msgs, 250));
+      const result = cleanTranslation(await doGeminiFetch(msgs, 600));
       if (result) return result;
-    } catch {}
+    } catch (e) { attempts.push({ model: GEMINI_MODEL, err: e }); }
     await sleep(800);
   }
-  return null;
+
+  for (const model of orModels) {
+    try {
+      const result = cleanTranslation(await doTextFetch(model, msgs, 600));
+      if (result) return result;
+    } catch (e) { attempts.push({ model, err: e }); }
+    await sleep(800);
+  }
+  throw Object.assign(new Error('All translation models failed'), { status: 429, attempts });
 }
 
 // ── Suggestions ───────────────────────────────────────────────────────────────
@@ -1215,32 +1293,41 @@ async function callSuggestions(conversationContext) {
   const lang = activeLang === 'ja' ? 'Japanese' : 'English';
   const level = getProfile()?.level || 'intermediate';
   const prompt =
-    `You are a language learning assistant. Look at the conversation and output exactly 2 short ${lang} sentences the ${level}-level learner could say next.\n` +
+    `You are a language learning assistant. Look at the conversation and suggest exactly 2 complete, natural ${lang} sentences the ${level}-level learner could say next.\n` +
     `STRICT RULES:\n` +
-    `- Each sentence must be under 12 words\n` +
+    `- Every sentence MUST be grammatically complete — never cut off mid-sentence\n` +
+    `- Each sentence should be under 25 words\n` +
     `- Output ONLY a valid JSON array. No other text, no markdown, no numbering.\n` +
-    `- Format: ["sentence one","sentence two"]`;
+    `- Format: ["complete sentence one","complete sentence two"]`;
   const msgs = [
     { role: 'system', content: prompt },
     ...conversationContext.slice(-4),
-    { role: 'user', content: 'Give me 3 response suggestions as a JSON array.' },
+    { role: 'user', content: 'Give me 2 complete response suggestions as a JSON array.' },
   ];
-  const suggestionModels = [
-    'google/gemma-4-31b-it:free',              // Google — Gemma 4 31B  ~1s
-    'google/gemma-4-26b-a4b-it:free',          // Google — Gemma 4 26B  ~2s
-    'openai/gpt-oss-20b:free',                 // OpenAI — GPT-OSS 20B  (백업)
+  const orModels = [
+    ...AI_MODEL_POOL,
+    ...AI_BACKUP_POOL,
   ];
-  for (const model of suggestionModels) {
-    try { return await doTextFetch(model, msgs, 200); }
-    catch {}
+  const attempts = [];
+
+  if (GEMINI_API_KEY) {
+    try {
+      const result = await doGeminiFetch(msgs, 500);
+      if (result) return result;
+    } catch (e) { attempts.push({ model: GEMINI_MODEL, err: e }); }
     await sleep(800);
   }
-  return null;
+
+  for (const model of orModels) {
+    try { return await doTextFetch(model, msgs, 500); }
+    catch (e) { attempts.push({ model, err: e }); await sleep(800); }
+  }
+  throw Object.assign(new Error('All suggestion models failed'), { status: 429, attempts });
 }
 
 function showSuggestionsLoading() {
   const bar = document.getElementById('suggestionBar');
-  if (!bar || !suggestionsEnabled) return;
+  if (!bar) return;
   bar.innerHTML = '<span class="suggestion-label">💡</span><div class="suggestion-loading"><span></span><span></span><span></span></div>';
   bar.classList.remove('hidden');
 }
@@ -1248,7 +1335,7 @@ function showSuggestionsLoading() {
 function renderSuggestions(suggestions) {
   const bar = document.getElementById('suggestionBar');
   if (!bar) return;
-  if (!suggestionsEnabled || !suggestions?.length) { bar.classList.add('hidden'); return; }
+  if (!suggestions?.length) { bar.classList.add('hidden'); return; }
   bar.innerHTML = '<span class="suggestion-label">💡 추천:</span>';
   suggestions.forEach(text => {
     const chip = document.createElement('button');
@@ -1269,17 +1356,6 @@ function renderSuggestions(suggestions) {
 function hideSuggestions() {
   const bar = document.getElementById('suggestionBar');
   if (bar) bar.classList.add('hidden');
-}
-
-function setSuggestionsEnabled(on) {
-  suggestionsEnabled = on;
-  const btn = document.getElementById('suggestBtn');
-  if (btn) {
-    btn.classList.toggle('active', on);
-    btn.setAttribute('aria-pressed', String(on));
-    btn.textContent = on ? '💡 추천 ON' : '💡 추천 OFF';
-  }
-  if (!on) hideSuggestions();
 }
 
 // ── Feedback UI ───────────────────────────────────────────────────────────────
@@ -1342,6 +1418,19 @@ function renderFeedback(data) {
   feedbackContent.appendChild(frag);
 }
 
+function formatModelName(model) {
+  const map = {
+    [`${GEMINI_MODEL}`]:                         'Gemini 2.5 Flash',
+    'google/gemma-4-31b-it:free':                'Gemma 4 31B',
+    'meta-llama/llama-3.3-70b-instruct:free':    'LLaMA 3.3 70B',
+    'openai/gpt-oss-20b:free':                   'GPT-OSS 20B',
+    'openai/gpt-oss-120b:free':                  'GPT-OSS 120B',
+    'google/gemma-3-27b-it:free':                'Gemma 3 27B',
+    'google/gemma-3-12b-it:free':                'Gemma 3 12B',
+  };
+  return map[model] || model;
+}
+
 // ── Streaming fetch ───────────────────────────────────────────────────────────
 async function fetchStream(apiMessages, model) {
   const ctrl  = new AbortController();
@@ -1391,6 +1480,59 @@ async function fetchStream(apiMessages, model) {
   replayBtn.textContent = '🔊';
   replayBtn.addEventListener('click', () => speak(fullText, bubbleEl));
   footerEl.prepend(replayBtn);
+
+  const transBtn = document.createElement('button');
+  transBtn.className = 'btn-msg-action';
+  transBtn.title = '한국어 번역';
+  transBtn.textContent = '🇰🇷 번역';
+  transBtn.addEventListener('click', async () => {
+    const existing = msgEl.querySelector('.msg-translation');
+    if (existing) { existing.remove(); return; }
+    transBtn.disabled = true;
+    const translationEl = document.createElement('div');
+    translationEl.className = 'msg-translation';
+    translationEl.innerHTML = '<span class="translation-dots"><span></span><span></span><span></span></span>';
+    msgEl.appendChild(translationEl);
+    scrollBottom();
+    try {
+      const translated = await callTranslation(fullText);
+      if (translationEl.isConnected) {
+        translationEl.innerHTML = `<span class="translation-label">🇰🇷</span><span class="translation-text">${toHtml(translated)}</span>`;
+      }
+    } catch (err) {
+      translationEl.remove();
+      showAIErrorModal(err, '한국어 번역');
+    }
+    transBtn.disabled = false;
+    scrollBottom();
+  });
+  footerEl.appendChild(transBtn);
+
+  const suggBtn = document.createElement('button');
+  suggBtn.className = 'btn-msg-action';
+  suggBtn.title = '추천 답변';
+  suggBtn.textContent = '💡 추천';
+  suggBtn.addEventListener('click', async () => {
+    suggBtn.disabled = true;
+    showSuggestionsLoading();
+    const suggContext = messages.slice(-6).map(m => ({ role: m.role, content: m.content }));
+    try {
+      const raw = await callSuggestions(suggContext);
+      const suggestions = parseSuggestions(raw);
+      if (suggestions.length) renderSuggestions(suggestions);
+      else hideSuggestions();
+    } catch (err) {
+      hideSuggestions();
+      showAIErrorModal(err, '추천 답변');
+    }
+    suggBtn.disabled = false;
+  });
+  footerEl.appendChild(suggBtn);
+
+  const modelTag = document.createElement('span');
+  modelTag.className = 'model-tag';
+  modelTag.textContent = formatModelName(model);
+  footerEl.appendChild(modelTag);
 
   if (hideAiText) {
     bubbleEl.classList.add('text-hidden');
@@ -1458,6 +1600,59 @@ async function fetchGeminiStream(apiMessages) {
   replayBtn.addEventListener('click', () => speak(fullText, bubbleEl));
   footerEl.prepend(replayBtn);
 
+  const transBtn2 = document.createElement('button');
+  transBtn2.className = 'btn-msg-action';
+  transBtn2.title = '한국어 번역';
+  transBtn2.textContent = '🇰🇷 번역';
+  transBtn2.addEventListener('click', async () => {
+    const existing = msgEl.querySelector('.msg-translation');
+    if (existing) { existing.remove(); return; }
+    transBtn2.disabled = true;
+    const translationEl = document.createElement('div');
+    translationEl.className = 'msg-translation';
+    translationEl.innerHTML = '<span class="translation-dots"><span></span><span></span><span></span></span>';
+    msgEl.appendChild(translationEl);
+    scrollBottom();
+    try {
+      const translated = await callTranslation(fullText);
+      if (translationEl.isConnected) {
+        translationEl.innerHTML = `<span class="translation-label">🇰🇷</span><span class="translation-text">${toHtml(translated)}</span>`;
+      }
+    } catch (err) {
+      translationEl.remove();
+      showAIErrorModal(err, '한국어 번역');
+    }
+    transBtn2.disabled = false;
+    scrollBottom();
+  });
+  footerEl.appendChild(transBtn2);
+
+  const suggBtn2 = document.createElement('button');
+  suggBtn2.className = 'btn-msg-action';
+  suggBtn2.title = '추천 답변';
+  suggBtn2.textContent = '💡 추천';
+  suggBtn2.addEventListener('click', async () => {
+    suggBtn2.disabled = true;
+    showSuggestionsLoading();
+    const suggContext = messages.slice(-6).map(m => ({ role: m.role, content: m.content }));
+    try {
+      const raw = await callSuggestions(suggContext);
+      const suggestions = parseSuggestions(raw);
+      if (suggestions.length) renderSuggestions(suggestions);
+      else hideSuggestions();
+    } catch (err) {
+      hideSuggestions();
+      showAIErrorModal(err, '추천 답변');
+    }
+    suggBtn2.disabled = false;
+  });
+  footerEl.appendChild(suggBtn2);
+
+  const geminiModelTag = document.createElement('span');
+  geminiModelTag.className = 'model-tag';
+  geminiModelTag.textContent = formatModelName(GEMINI_MODEL);
+  footerEl.appendChild(geminiModelTag);
+
   if (hideAiText) {
     bubbleEl.classList.add('text-hidden');
     attachRevealOnClick(bubbleEl);
@@ -1468,14 +1663,23 @@ async function fetchGeminiStream(apiMessages) {
 
 async function callAI(apiMessages) {
   const rateLimited = e => e.status === 429 || e.status === 503 || e.status === 404;
+  const attempts = []; // { model, err } — 실패 이력
+
+  function record(modelName, e) {
+    // 같은 모델+상태 중복 제거 (재시도 실패 시)
+    const dup = attempts.find(a => a.model === modelName && a.err.status === e.status && a.err.name === e.name);
+    if (!dup) attempts.push({ model: modelName, err: e });
+  }
+
+  function bail(e) { e.attempts = attempts; throw e; }
 
   // 1단계: Gemini (primary)
   if (GEMINI_API_KEY) {
     try { return await fetchGeminiStream(apiMessages); }
-    catch (e) { if (!rateLimited(e)) throw e; }
+    catch (e) { record(GEMINI_MODEL, e); if (!rateLimited(e)) bail(e); }
     await sleep(1000); showLoading();
     try { return await fetchGeminiStream(apiMessages); }
-    catch (e) { if (!rateLimited(e)) throw e; }
+    catch (e) { record(GEMINI_MODEL, e); if (!rateLimited(e)) bail(e); }
   }
 
   // 2단계: OpenRouter 풀 (session-fixed primary → 나머지 순서)
@@ -1484,23 +1688,111 @@ async function callAI(apiMessages) {
 
   try { return await fetchStream(apiMessages, primary); }
   catch (e) {
-    if (!rateLimited(e)) throw e;
+    record(primary, e);
+    if (!rateLimited(e)) bail(e);
     await sleep(1000); showLoading();
     try { return await fetchStream(apiMessages, primary); }
-    catch (e2) { if (!rateLimited(e2)) throw e2; }
+    catch (e2) { record(primary, e2); if (!rateLimited(e2)) bail(e2); }
   }
   for (const model of poolFallbacks) {
     try { await sleep(800); showLoading(); return await fetchStream(apiMessages, model); }
-    catch (e) { if (!rateLimited(e)) throw e; }
+    catch (e) { record(model, e); if (!rateLimited(e)) bail(e); }
   }
 
   // 3단계: 백업 풀 (최후 수단)
   for (const model of AI_BACKUP_POOL) {
     try { await sleep(800); showLoading(); return await fetchStream(apiMessages, model); }
-    catch (e) { if (!rateLimited(e)) throw e; }
+    catch (e) { record(model, e); if (!rateLimited(e)) bail(e); }
   }
 
-  throw Object.assign(new Error('All models rate limited'), { status: 429 });
+  bail(Object.assign(new Error('All models rate limited'), { status: 429 }));
+}
+
+function classifyErrReason(err) {
+  if (err.name === 'AbortError')                             return '응답 시간 초과 (30초)';
+  if (err.message?.toLowerCase().includes('failed to fetch')
+   || err.message?.toLowerCase().includes('networkerror')
+   || err instanceof TypeError)                              return '네트워크 연결 오류';
+  if (err.status === 429)                                    return '요청 초과 (Rate Limit)';
+  if (err.status === 503)                                    return '서버 일시 중단';
+  if (err.status === 404)                                    return '모델 없음 (404)';
+  if (err.status === 401)                                    return '인증 실패 (API 키 오류)';
+  if (err.message === 'Empty response')                      return '빈 응답 반환';
+  return err.message || '알 수 없는 오류';
+}
+
+function showAIErrorModal(err, context) {
+  hideLoading();
+  const attempts = err.attempts || [];
+
+  const hasAuth    = attempts.some(a => a.err.status === 401) || err.status === 401;
+  const hasTimeout = attempts.some(a => a.err.name === 'AbortError') || err.name === 'AbortError';
+  const hasNetwork = attempts.some(a =>
+    a.err instanceof TypeError || a.err.message?.toLowerCase().includes('failed to fetch')
+  ) || err instanceof TypeError;
+  const allRateLim = attempts.length > 0 && attempts.every(a => [429, 503, 404].includes(a.err.status));
+
+  let headline, tip;
+  if (hasAuth) {
+    headline = 'API 키 인증에 실패했습니다.';
+    tip = USE_PROXY
+      ? 'Vercel 환경변수(OPENROUTER_API_KEY 또는 GEMINI_API_KEY)를 확인해 주세요.'
+      : 'config.js 또는 localStorage의 API 키를 확인해 주세요.';
+  } else if (hasNetwork) {
+    headline = '인터넷 연결 오류가 발생했습니다.';
+    tip = '네트워크 상태를 확인한 후 다시 시도해 주세요.';
+  } else if (hasTimeout) {
+    headline = '서버 응답 시간이 초과되었습니다.';
+    tip = '서버가 혼잡하거나 네트워크가 느립니다. 잠시 후 다시 시도해 주세요.';
+  } else if (allRateLim) {
+    headline = '모든 무료 AI 모델의 사용량이 일시적으로 초과되었습니다.';
+    tip = '1~2분 후 다시 시도해 주세요. 동시 사용자가 많을 때 발생하는 일시적 현상입니다.';
+  } else {
+    headline = 'AI 서비스에 오류가 발생했습니다.';
+    tip = '잠시 후 다시 시도해 주세요.';
+  }
+
+  let attemptsHtml = '';
+  if (attempts.length) {
+    const rows = attempts.map(a =>
+      `<li><span class="aiem-model">${formatModelName(a.model)}</span><span class="aiem-reason">${classifyErrReason(a.err)}</span></li>`
+    ).join('');
+    attemptsHtml = `<details class="aiem-attempts"><summary>시도한 모델 (${attempts.length}개)</summary><ul>${rows}</ul></details>`;
+  }
+
+  let overlay = document.getElementById('aiErrorOverlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'aiErrorOverlay';
+    overlay.className = 'aiem-overlay';
+    overlay.addEventListener('click', e => { if (e.target === overlay) closeAIErrorModal(); });
+    document.body.appendChild(overlay);
+  }
+
+  overlay.innerHTML = `
+    <div class="aiem-box" role="dialog" aria-modal="true">
+      <div class="aiem-header">
+        <span class="aiem-icon">⚠️</span>
+        <span class="aiem-title">AI 호출 실패${context ? ' — ' + context : ''}</span>
+        <button class="aiem-close" aria-label="닫기">✕</button>
+      </div>
+      <div class="aiem-body">
+        <p class="aiem-headline">${headline}</p>
+        ${attemptsHtml}
+        <p class="aiem-tip">💡 ${tip}</p>
+      </div>
+      <div class="aiem-footer">
+        <button class="aiem-btn-close">닫기</button>
+      </div>
+    </div>`;
+
+  overlay.classList.remove('aiem-hidden');
+  overlay.querySelector('.aiem-close').addEventListener('click', closeAIErrorModal);
+  overlay.querySelector('.aiem-btn-close').addEventListener('click', closeAIErrorModal);
+}
+
+function closeAIErrorModal() {
+  document.getElementById('aiErrorOverlay')?.classList.add('aiem-hidden');
 }
 
 // ── PII detection ────────────────────────────────────────────────────────────
@@ -1566,14 +1858,8 @@ async function sendMessage(rawText) {
   const apiMessages = [{ role: 'system', content: buildSystemPrompt() }, ...context];
 
   showLoading();
-  showFeedbackLoading();
 
-  feedbackGenCount++;
-  const myGen     = feedbackGenCount;
-  const sessionId = currentSession.sessionId;
   const prevTurns = getDailyTurnCount();
-
-  let translationEl = null;
 
   try {
     const aiText = await callAI(apiMessages);
@@ -1593,72 +1879,12 @@ async function sendMessage(rawText) {
 
     if (ttsEnabled && ttsSupported && lastAiBubble) speak(aiText, lastAiBubble);
 
-    // Fire translation only when enabled (skip API call entirely when OFF)
-    if (showTranslation && lastAiBubble?.parentElement) {
-      translationEl = document.createElement('div');
-      translationEl.className = 'msg-translation';
-      translationEl.innerHTML = '<span class="translation-dots"><span></span><span></span><span></span></span>';
-      lastAiBubble.parentElement.appendChild(translationEl);
-      callTranslation(aiText).then(translated => {
-        if (!translationEl?.isConnected) return;
-        if (translated) {
-          translationEl.innerHTML = `<span class="translation-label">🇰🇷</span><span class="translation-text">${toHtml(translated)}</span>`;
-        } else {
-          translationEl.remove();
-          translationEl = null;
-        }
-      }).catch(() => { translationEl?.remove(); translationEl = null; });
-    }
-
-    // Stagger suggestions 800ms after translation to avoid simultaneous hits
-    if (suggestionsEnabled) {
-      showSuggestionsLoading();
-      const suggContext = messages.slice(-6).map(m => ({ role: m.role, content: m.content }));
-      sleep(800)
-        .then(() => callSuggestions(suggContext))
-        .then(raw => {
-          if (!suggestionsEnabled) return;
-          const suggestions = parseSuggestions(raw);
-          if (suggestions.length) renderSuggestions(suggestions);
-          else hideSuggestions();
-        })
-        .catch(() => hideSuggestions());
-    }
-
   } catch (err) {
-    hideLoading();
-    let msg = '⚠️ 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.';
-    if (err.status === 429) msg = '⚠️ AI 응답 한도 초과입니다. 잠시 후 다시 시도해 주세요.';
-    if (err.status === 401) msg = USE_PROXY ? '⚠️ 서버 설정 오류입니다. Vercel 환경변수를 확인해 주세요.' : '⚠️ API 키가 올바르지 않습니다.';
-    showError(msg);
+    showAIErrorModal(err, '채팅 응답');
   } finally {
     isProcessing = false;
     sendBtn.disabled = false;
     scrollBottom();
-  }
-
-  // Feedback runs AFTER AI responds (sequential, not parallel) to reduce rate limit pressure
-  if (myGen !== feedbackGenCount) return; // superseded by a newer send
-  // Skip feedback for very short messages (no meaningful grammar to analyze)
-  if (text.length < 10) {
-    feedbackContent.innerHTML = '<div class="feedback-placeholder">메시지가 너무 짧아 피드백을 건너뜁니다.</div>';
-    return;
-  }
-  const feedbackData = await callFeedback(text).catch(() => null);
-  if (myGen !== feedbackGenCount) return;
-  if (feedbackData) {
-    renderFeedback(feedbackData);
-    if (feedbackData.corrections?.length) {
-      const items = feedbackData.corrections.map(c => ({
-        date: new Date().toISOString(), sessionId,
-        original: c.original, corrected: c.corrected,
-        type: c.type, explanation: c.explanation,
-      }));
-      appendFeedbackLog(items);
-      addSessionFeedbacks(items);
-    }
-  } else {
-    feedbackContent.innerHTML = '<div class="feedback-placeholder">Feedback unavailable.</div>';
   }
 }
 
@@ -2261,20 +2487,6 @@ function setupEvents() {
     setHideTextMode(!hideAiText);
   });
 
-  document.getElementById('suggestBtn')?.addEventListener('click', () => {
-    setSuggestionsEnabled(!suggestionsEnabled);
-  });
-
-  document.getElementById('translationBtn')?.addEventListener('click', () => {
-    showTranslation = !showTranslation;
-    const btn = document.getElementById('translationBtn');
-    btn.classList.toggle('active', showTranslation);
-    btn.setAttribute('aria-pressed', String(showTranslation));
-    btn.textContent = showTranslation ? '🇰🇷 번역 ON' : '🇰🇷 번역 OFF';
-    document.querySelectorAll('.msg-translation').forEach(el => {
-      el.classList.toggle('hidden', !showTranslation);
-    });
-  });
 
   window.addEventListener('hashchange', router);
 }

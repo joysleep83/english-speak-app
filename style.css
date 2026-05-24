@@ -677,6 +677,22 @@ body {
   padding: 0 4px;
 }
 .ts { font-size: .7rem; color: var(--muted); }
+.model-tag { font-size: .62rem; color: var(--muted); opacity: .6; margin-left: auto; white-space: nowrap; }
+
+.btn-msg-action {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.7rem;
+  color: var(--muted);
+  padding: 1px 5px;
+  line-height: 1.4;
+  transition: color .15s, background .15s, border-color .15s;
+  white-space: nowrap;
+}
+.btn-msg-action:hover { color: var(--primary); border-color: var(--primary); background: rgba(88,101,242,0.07); }
+.btn-msg-action:disabled { opacity: .5; cursor: default; }
 
 .btn-replay {
   background: none;
@@ -749,6 +765,70 @@ body {
   border: 1px solid #fca5a5; border-radius: var(--radius-sm);
   padding: 9px 13px; font-size: .84rem; animation: msgIn .2s ease;
 }
+
+/* ── AI Error Modal ──────────────────────────────────────────────────── */
+.aiem-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  background: rgba(0,0,0,.45);
+  display: flex; align-items: center; justify-content: center;
+  padding: 16px;
+  animation: fadeIn .15s ease;
+}
+.aiem-overlay.aiem-hidden { display: none; }
+@keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
+
+.aiem-box {
+  background: #fff; border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,.18);
+  width: 100%; max-width: 420px;
+  overflow: hidden; animation: slideUp .18s ease;
+}
+@keyframes slideUp { from { transform: translateY(12px); opacity: 0 } to { transform: none; opacity: 1 } }
+
+.aiem-header {
+  display: flex; align-items: center; gap: 8px;
+  background: #fef2f2; border-bottom: 1px solid #fecaca;
+  padding: 12px 14px;
+}
+.aiem-icon { font-size: 1.1rem; flex-shrink: 0; }
+.aiem-title { flex: 1; font-size: .88rem; font-weight: 600; color: #991b1b; }
+.aiem-close {
+  background: none; border: none; cursor: pointer;
+  color: #b91c1c; font-size: .9rem; padding: 2px 6px;
+  border-radius: 4px; line-height: 1; transition: background .15s;
+}
+.aiem-close:hover { background: #fee2e2; }
+
+.aiem-body { padding: 14px 16px 10px; }
+.aiem-headline { margin: 0 0 10px; font-size: .88rem; font-weight: 500; color: #1e1e2e; line-height: 1.5; }
+
+.aiem-attempts { margin: 0 0 10px; border: 1px solid #fecaca; border-radius: 6px; overflow: hidden; }
+.aiem-attempts summary {
+  cursor: pointer; font-size: .78rem; font-weight: 600;
+  color: #b91c1c; padding: 7px 10px;
+  list-style: none; user-select: none;
+  background: #fff5f5;
+}
+.aiem-attempts summary::-webkit-details-marker { display: none; }
+.aiem-attempts[open] summary { border-bottom: 1px solid #fecaca; }
+.aiem-attempts ul { margin: 0; padding: 6px 10px; list-style: none; display: flex; flex-direction: column; gap: 5px; }
+.aiem-attempts li { display: flex; justify-content: space-between; gap: 8px; font-size: .78rem; align-items: baseline; }
+.aiem-model { font-weight: 600; color: #374151; }
+.aiem-reason { color: #b45309; text-align: right; }
+
+.aiem-tip { margin: 0; font-size: .8rem; color: #6b7280; line-height: 1.55; }
+
+.aiem-footer {
+  display: flex; justify-content: flex-end;
+  padding: 10px 16px 14px;
+}
+.aiem-btn-close {
+  background: #dc2626; color: #fff; border: none;
+  border-radius: 6px; padding: 7px 20px;
+  font-size: .84rem; font-weight: 600; cursor: pointer;
+  transition: background .15s;
+}
+.aiem-btn-close:hover { background: #b91c1c; }
 
 .privacy-warning {
   align-self: stretch; display: flex; gap: 10px; align-items: flex-start;
