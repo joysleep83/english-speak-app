@@ -7,10 +7,12 @@ const AI_MODEL_POOL = [
   'google/gemma-4-31b-it:free',               // Google — Gemma 4 31B  ~1s ★★★★★
   'meta-llama/llama-3.3-70b-instruct:free',   // Meta   — LLaMA 3.3 70B    ★★★
 ];
-// Last-resort — slow but reliable when Gemma & LLaMA are rate-limited
+// Last-resort — used only when Gemini & main pool are all rate-limited
+// gpt-oss-120b:free removed (404 — no longer on OpenRouter, 2026-07 확인)
+// gemma-4-26b-a4b: 대화 품질 낮음(4B active params)이지만 에러 모달보다는 나은 최후 수단
 const AI_BACKUP_POOL = [
   'openai/gpt-oss-20b:free',                  // OpenAI — GPT-OSS 20B  (느림)
-  'openai/gpt-oss-120b:free',                 // OpenAI — GPT-OSS 120B (느림)
+  'google/gemma-4-26b-a4b-it:free',           // Google — Gemma 4 26B-A4B (최후 수단)
 ];
 let sessionModel = null;
 
@@ -989,7 +991,11 @@ function parseGeminiSSE(chunk) {
     if (!line.startsWith('data: ')) continue;
     const raw = line.slice(6).trim();
     if (!raw) continue;
-    try { const tok = JSON.parse(raw).candidates?.[0]?.content?.parts?.[0]?.text; if (tok) tokens.push(tok); } catch {}
+    try {
+      for (const part of JSON.parse(raw).candidates?.[0]?.content?.parts || []) {
+        if (part.text) tokens.push(part.text);
+      }
+    } catch {}
   }
   return tokens;
 }
@@ -1182,7 +1188,8 @@ async function doGeminiFetch(apiMsgs, maxTokens = 300) {
   const turns = apiMsgs
     .filter(m => m.role !== 'system')
     .map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
-  const body = { contents: turns, generationConfig: { maxOutputTokens: maxTokens } };
+  // thinkingBudget: 0 — thinking 토큰이 maxOutputTokens를 잠식해 빈/잘린 응답이 나오는 것 방지
+  const body = { contents: turns, generationConfig: { maxOutputTokens: maxTokens, thinkingConfig: { thinkingBudget: 0 } } };
   if (systemMsg) body.systemInstruction = { parts: [{ text: systemMsg.content }] };
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
@@ -1424,7 +1431,7 @@ function formatModelName(model) {
     'google/gemma-4-31b-it:free':                'Gemma 4 31B',
     'meta-llama/llama-3.3-70b-instruct:free':    'LLaMA 3.3 70B',
     'openai/gpt-oss-20b:free':                   'GPT-OSS 20B',
-    'openai/gpt-oss-120b:free':                  'GPT-OSS 120B',
+    'google/gemma-4-26b-a4b-it:free':            'Gemma 4 26B-A4B',
     'google/gemma-3-27b-it:free':                'Gemma 3 27B',
     'google/gemma-3-12b-it:free':                'Gemma 3 12B',
   };
@@ -1462,14 +1469,25 @@ async function fetchStream(apiMessages, model) {
   const reader  = res.body.getReader();
   const decoder = new TextDecoder();
   let fullText  = '';
+  // 청크가 SSE 줄 중간에서 끊기면 완성된 줄만 파싱하고 나머지는 다음 청크로 이월 (토큰 유실 방지)
+  let sseBuf    = '';
   while (true) {
     const { done, value } = await reader.read();
-    if (done) break;
-    for (const tok of parseSSE(decoder.decode(value, { stream: true }))) {
+    if (done) { sseBuf += decoder.decode(); break; }
+    sseBuf += decoder.decode(value, { stream: true });
+    const nl = sseBuf.lastIndexOf('\n');
+    if (nl === -1) continue;
+    const completeLines = sseBuf.slice(0, nl);
+    sseBuf = sseBuf.slice(nl + 1);
+    for (const tok of parseSSE(completeLines)) {
       fullText += tok;
       bubbleEl.innerHTML = toHtml(fullText);
       scrollBottom();
     }
+  }
+  for (const tok of parseSSE(sseBuf)) {
+    fullText += tok;
+    bubbleEl.innerHTML = toHtml(fullText);
   }
   bubbleEl.classList.remove('streaming');
   if (!fullText.trim()) { msgEl.remove(); lastAiBubble = null; throw new Error('Empty response'); }
@@ -1548,7 +1566,9 @@ async function fetchGeminiStream(apiMessages) {
     .filter(m => m.role !== 'system')
     .map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
 
-  const body = { contents: turns, generationConfig: { maxOutputTokens: 300 } };
+  // thinkingBudget: 0 — 2.5 Flash의 thinking 토큰이 maxOutputTokens를 소모해
+  // 응답이 문장 중간에 잘리는(MAX_TOKENS) 문제 방지
+  const body = { contents: turns, generationConfig: { maxOutputTokens: 300, thinkingConfig: { thinkingBudget: 0 } } };
   if (systemMsg) body.systemInstruction = { parts: [{ text: systemMsg.content }] };
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:streamGenerateContent?alt=sse&key=${GEMINI_API_KEY}`;
@@ -1581,14 +1601,25 @@ async function fetchGeminiStream(apiMessages) {
   const reader  = res.body.getReader();
   const decoder = new TextDecoder();
   let fullText  = '';
+  // 청크가 SSE 줄 중간에서 끊기면 완성된 줄만 파싱하고 나머지는 다음 청크로 이월 (토큰 유실 방지)
+  let sseBuf    = '';
   while (true) {
     const { done, value } = await reader.read();
-    if (done) break;
-    for (const tok of parseGeminiSSE(decoder.decode(value, { stream: true }))) {
+    if (done) { sseBuf += decoder.decode(); break; }
+    sseBuf += decoder.decode(value, { stream: true });
+    const nl = sseBuf.lastIndexOf('\n');
+    if (nl === -1) continue;
+    const completeLines = sseBuf.slice(0, nl);
+    sseBuf = sseBuf.slice(nl + 1);
+    for (const tok of parseGeminiSSE(completeLines)) {
       fullText += tok;
       bubbleEl.innerHTML = toHtml(fullText);
       scrollBottom();
     }
+  }
+  for (const tok of parseGeminiSSE(sseBuf)) {
+    fullText += tok;
+    bubbleEl.innerHTML = toHtml(fullText);
   }
   bubbleEl.classList.remove('streaming');
   if (!fullText.trim()) { msgEl.remove(); lastAiBubble = null; throw new Error('Empty response'); }
